@@ -1,0 +1,41 @@
+# ==========================================
+# AI Passport Studio — Requirements
+# ==========================================
+
+# ----- Web Framework & Server -----
+fastapi
+uvicorn[standard]
+python-multipart
+watchfiles
+
+# ----- UI (Streamlit frontend) -----
+streamlit
+
+# ----- Image Processing (Core) -----
+pillow
+pillow-heif
+opencv-python
+numpy
+
+# ----- Background Removal -----
+rembg
+
+# ----- PDF Export -----
+reportlab
+
+# ----- Configuration -----
+python-dotenv
+pydantic
+
+# ----- AI / Deep Learning -----
+torch
+torchvision
+onnxruntime
+
+# ----- Face Detection -----
+mediapipe==0.10.21
+facexlib
+
+# ----- Optional: Super-Resolution (install manually if needed) -----
+# realesrgan
+# basicsr

@@ -1,0 +1,183 @@
+{
+	"info": {
+		"_postman_id": "f89d38fa-f4d6-4447-ba8e-c35a8cd42dfd",
+		"name": "AI Passport Photo Maker API",
+		"description": "API collection for the AI-Powered Passport Photo Generator. Includes endpoints for listing rules, uploading images, processing biometric guidelines, and generating printable grid sheets.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "System Info",
+			"item": [
+				{
+					"name": "Get Supported Countries",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/countries",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"countries"
+							]
+						},
+						"description": "Returns the database of supported country passport photo rules and biometric specs."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Paper Sizes",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/paper-sizes",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"paper-sizes"
+							]
+						},
+						"description": "Returns the database of supported paper sheet dimensions (A4, Letter, 4x6, etc.)."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Core Pipeline",
+			"item": [
+				{
+					"name": "1. Upload Photo",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"description": "Image file to upload (JPG, PNG, HEIC)",
+									"type": "file",
+									"src": []
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/upload",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"upload"
+							]
+						},
+						"description": "Uploads a raw portrait photo, performs automatic face detection and rotation, and returns the aligned photo filename and detected face/eye coordinates."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Process Passport Photo",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"filename\": \"your_original_filename_from_step1.jpg\",\n  \"country\": \"usa\",\n  \"face\": {\n    \"x\": 250,\n    \"y\": 180,\n    \"w\": 300,\n    \"h\": 350\n  },\n  \"scale\": 1.0,\n  \"x_offset\": 0,\n  \"y_offset\": 0,\n  \"manual_rotation\": 0.0,\n  \"remove_bg\": false,\n  \"bg_color_hex\": \"#FFFFFF\",\n  \"brightness\": 1.0,\n  \"contrast\": 1.0,\n  \"sharpness\": 1.0,\n  \"saturation\": 1.0\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/process",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"process"
+							]
+						},
+						"description": "Processes the aligned working image to crop and resize according to country specifications, optionally replacing the background and applying image enhancements."
+					},
+					"response": []
+				},
+				{
+					"name": "3. Generate Printable Grid Sheet",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"filename\": \"passport_your_original_filename_from_step1.png\",\n  \"country\": \"usa\",\n  \"paper_size\": \"A4\",\n  \"margin_mm\": 8.0,\n  \"gap_mm\": 2.5\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/generate-sheet",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"generate-sheet"
+							]
+						},
+						"description": "Arranges the single passport photo in a printable grid, drawing borders and cutting lines. Generates high-res sheet image and PDF."
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://127.0.0.1:8000",
+			"type": "string"
+		}
+	]
+}
