@@ -71,84 +71,254 @@ def rotate_image(image, angle, center=None):
         M = np.eye(2, 3, dtype=np.float32)
         return image, M
 
+# Initialize MediaPipe Face Mesh
+MEDIAPIPE_AVAILABLE = False
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
+    logger.info("MediaPipe Face Mesh is available.")
+except ImportError:
+    logger.info("MediaPipe not installed — Face Mesh fallback will be unavailable.")
+
+def estimate_head_pose(landmarks, w, h):
+    """
+    Estimate head pose (yaw, pitch, roll) in degrees using solvePnP.
+    landmarks dict must contain: left_eye, right_eye, nose_tip, left_mouth, right_mouth, chin
+    """
+    try:
+        # 3D coordinates of generic face model
+        model_points = np.array([
+            (0.0, 0.0, 0.0),             # Nose tip
+            (0.0, -330.0, -65.0),        # Chin
+            (-225.0, 170.0, -135.0),     # Left eye
+            (225.0, 170.0, -135.0),      # Right eye
+            (-150.0, -150.0, -125.0),    # Left mouth corner
+            (150.0, -150.0, -125.0)      # Right mouth corner
+        ], dtype=np.float32)
+        
+        le = landmarks["left_eye"]
+        re = landmarks["right_eye"]
+        nt = landmarks["nose_tip"]
+        lm = landmarks["left_mouth"]
+        rm = landmarks["right_mouth"]
+        ch = landmarks["chin"]
+        
+        image_points = np.array([
+            nt, ch, le, re, lm, rm
+        ], dtype=np.float32)
+        
+        # Camera model matrix
+        focal_length = w
+        center = (w / 2, h / 2)
+        camera_matrix = np.array([
+            [focal_length, 0, center[0]],
+            [0, focal_length, center[1]],
+            [0, 0, 1]
+        ], dtype=np.float32)
+        
+        dist_coeffs = np.zeros((4, 1))
+        
+        success, rotation_vector, translation_vector = cv2.solvePnP(
+            model_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE
+        )
+        
+        if not success:
+            return 0.0, 0.0, 0.0
+            
+        rmat, _ = cv2.Rodrigues(rotation_vector)
+        proj_matrix = np.hstack((rmat, translation_vector))
+        _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(proj_matrix)
+        
+        pitch = float(euler_angles[0][0])
+        yaw = float(euler_angles[1][0])
+        roll = float(euler_angles[2][0])
+        
+        return yaw, pitch, roll
+    except Exception as e:
+        logger.warning(f"solvePnP head pose estimation skipped/failed: {e}")
+        try:
+            # Simplistic 2D fallback
+            le = landmarks["left_eye"]
+            re = landmarks["right_eye"]
+            nt = landmarks["nose_tip"]
+            dx = re[0] - le[0]
+            dy = re[1] - le[1]
+            roll = math.degrees(math.atan2(dy, dx)) if dx != 0 else 0.0
+            eye_w = max(1, re[0] - le[0])
+            yaw = ((nt[0] - le[0]) / eye_w - 0.5) * 90.0
+            return yaw, 0.0, roll
+        except Exception:
+            return 0.0, 0.0, 0.0
+
+def detect_face_mediapipe(cv_img):
+    """
+    Detect face and key landmarks using MediaPipe Face Mesh fallback.
+    """
+    if not MEDIAPIPE_AVAILABLE:
+        return None, None, None
+    try:
+        h, w = cv_img.shape[:2]
+        mp_face_mesh = mp.solutions.face_mesh
+        
+        # Convert BGR to RGB
+        rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        with mp_face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5
+        ) as face_mesh:
+            results = face_mesh.process(rgb_img)
+            
+            if not results.multi_face_landmarks:
+                return None, None, None
+                
+            landmarks = results.multi_face_landmarks[0]
+            
+            # Key landmark indices (refined mesh):
+            # Left pupil: 468, Right pupil: 473, Nose tip: 4, Chin: 152, Left mouth corner: 61, Right mouth corner: 291
+            pt_left = landmarks.landmark[468]
+            pt_right = landmarks.landmark[473]
+            pt_nose = landmarks.landmark[4]
+            pt_chin = landmarks.landmark[152]
+            pt_lm = landmarks.landmark[61]
+            pt_rm = landmarks.landmark[291]
+            
+            le = (int(pt_left.x * w), int(pt_left.y * h))
+            re = (int(pt_right.x * w), int(pt_right.y * h))
+            nt = (int(pt_nose.x * w), int(pt_nose.y * h))
+            ch = (int(pt_chin.x * w), int(pt_chin.y * h))
+            lm = (int(pt_lm.x * w), int(pt_lm.y * h))
+            rm = (int(pt_rm.x * w), int(pt_rm.y * h))
+            
+            # Compute face bounding box
+            xs = [lmk.x * w for lmk in landmarks.landmark]
+            ys = [lmk.y * h for lmk in landmarks.landmark]
+            x_min, x_max = int(min(xs)), int(max(xs))
+            y_min, y_max = int(min(ys)), int(max(ys))
+            
+            face_w = x_max - x_min
+            face_h = y_max - y_min
+            
+            # Adjust face box to center around landmarks with standard proportions
+            eye_y = (le[1] + re[1]) / 2.0
+            crown_y = eye_y - (ch[1] - eye_y) * 0.95
+            
+            adjusted_h = int(ch[1] - crown_y)
+            adjusted_w = adjusted_h
+            adjusted_x = int((le[0] + re[0]) / 2.0 - adjusted_w / 2)
+            adjusted_y = int(crown_y)
+            
+            adjusted_x = max(0, min(w - 10, adjusted_x))
+            adjusted_y = max(0, min(h - 10, adjusted_y))
+            adjusted_w = max(10, min(w - adjusted_x, adjusted_w))
+            adjusted_h = max(10, min(h - adjusted_y, adjusted_h))
+            
+            face_box = (adjusted_x, adjusted_y, adjusted_w, adjusted_h)
+            
+            eye_size = int(adjusted_w * 0.12)
+            eyes = [
+                (le[0] - eye_size // 2, le[1] - eye_size // 2, eye_size, eye_size),
+                (re[0] - eye_size // 2, re[1] - eye_size // 2, eye_size, eye_size)
+            ]
+            
+            pts = {
+                "left_eye": le,
+                "right_eye": re,
+                "nose_tip": nt,
+                "chin": ch,
+                "left_mouth": lm,
+                "right_mouth": rm
+            }
+            
+            return face_box, eyes, pts
+    except Exception as e:
+        logger.warning(f"MediaPipe fallback face detection failed: {e}")
+        return None, None, None
+
 def detect_face_and_eyes(cv_img):
     """
-    Detects face bounding box and eye pupils using RetinaFace.
+    Detect face bounding box, pupil coordinates, and face landmarks.
+    Tries RetinaFace first, falls back to MediaPipe.
     Returns:
         face_box (x, y, w, h) or None
         eyes [(x, y, w, h), ...] or None
+        landmarks (dict of points) or None
     """
     try:
         if cv_img is None or not hasattr(cv_img, 'shape') or len(cv_img.shape) < 2:
-            logger.warning("Invalid cv_img passed to detect_face_and_eyes")
-            return None, None
+            return None, None, None
 
         h, w = cv_img.shape[:2]
         if w < 10 or h < 10:
-            logger.warning("Image too small to perform face detection")
-            return None, None
+            return None, None, None
 
-        detector = get_retinaface_detector()
-        if detector is None:
-            logger.error("RetinaFace detector is not initialized")
-            return None, None
+        # ── 1. RetinaFace Detection ───────────────────────────────────────
+        try:
+            detector = get_retinaface_detector()
+            if detector is not None:
+                import torch
+                with torch.no_grad():
+                    results = detector.detect_faces(cv_img, conf_threshold=0.5)
+                
+                if results is not None and len(results) > 0:
+                    best_face = results[0]
+                    x_min, y_min, x_max, y_max = best_face[0:4]
+                    
+                    le_x, le_y = int(best_face[5]), int(best_face[6])
+                    re_x, re_y = int(best_face[7]), int(best_face[8])
+                    nt_x, nt_y = int(best_face[9]), int(best_face[10])
+                    lm_x, lm_y = int(best_face[11]), int(best_face[12])
+                    rm_x, rm_y = int(best_face[13]), int(best_face[14])
+                    
+                    # Estimate chin position (approx. 1.2x of eye-to-mouth height from mouth corners)
+                    eye_y = (le_y + re_y) / 2.0
+                    mouth_y = (lm_y + rm_y) / 2.0
+                    chin_y = int(mouth_y + (mouth_y - eye_y) * 0.8)
+                    chin_x = int((lm_x + rm_x) / 2.0)
+                    
+                    # Biometric crown position
+                    crown_y = eye_y - (chin_y - eye_y) * 0.95
+                    face_h = chin_y - crown_y
+                    face_w = face_h
+                    
+                    center_x = (x_min + x_max) / 2.0
+                    fx = center_x - face_w / 2.0
+                    fy = crown_y
+                    
+                    fx_int = max(0, int(fx))
+                    fy_int = max(0, int(fy))
+                    fw_int = min(w - fx_int, int(face_w))
+                    fh_int = min(h - fy_int, int(face_h))
+                    
+                    if fw_int > 0 and fh_int > 0:
+                        face_box = (fx_int, fy_int, fw_int, fh_int)
+                        eye_size = max(1, int(fw_int * 0.12))
+                        
+                        eyes = [
+                            (le_x - eye_size // 2, le_y - eye_size // 2, eye_size, eye_size),
+                            (re_x - eye_size // 2, re_y - eye_size // 2, eye_size, eye_size)
+                        ]
+                        
+                        landmarks = {
+                            "left_eye": (le_x, le_y),
+                            "right_eye": (re_x, re_y),
+                            "nose_tip": (nt_x, nt_y),
+                            "left_mouth": (lm_x, lm_y),
+                            "right_mouth": (rm_x, rm_y),
+                            "chin": (chin_x, chin_y)
+                        }
+                        
+                        return face_box, sorted(eyes, key=lambda e: e[0]), landmarks
+        except Exception as ret_err:
+            logger.warning(f"RetinaFace detection error (will retry with MediaPipe): {ret_err}")
 
-        import torch
-        with torch.no_grad():
-            results = detector.detect_faces(cv_img, conf_threshold=0.5)
-
-        if results is None or len(results) == 0:
-            return None, None
-
-        best_face = results[0]
-        x_min, y_min, x_max, y_max = best_face[0:4]
-
-        # Extract eye landmarks:
-        # Left eye (relative to person, i.e., image left): index 5, 6
-        # Right eye (relative to person, i.e., image right): index 7, 8
-        le_x, le_y = best_face[5], best_face[6]
-        re_x, re_y = best_face[7], best_face[8]
-
-        # Biometric crown estimation:
-        # Average y of eyes
-        eye_y = (le_y + re_y) / 2.0
-        chin_y = y_max
-        # Crown is roughly 0.95 * (chin - eyes) above the eyes
-        crown_y = eye_y - (chin_y - eye_y) * 0.95
-
-        face_h = chin_y - crown_y
-        face_w = face_h  # Square biometric box
-
-        center_x = (x_min + x_max) / 2.0
-        fx = center_x - face_w / 2.0
-        fy = crown_y
-
-        # Clip values to image bounds
-        fx_int = max(0, int(fx))
-        fy_int = max(0, int(fy))
-        fw_int = min(w - fx_int, int(face_w))
-        fh_int = min(h - fy_int, int(face_h))
-
-        # Avoid zero or negative dimension bounding box
-        if fw_int <= 0 or fh_int <= 0:
-            logger.warning("Detected face box has non-positive width/height")
-            return None, None
-
-        face_box = (fx_int, fy_int, fw_int, fh_int)
-
-        # Create eye boxes centered around the pupils
-        eye_size = int(fw_int * 0.12)
-        if eye_size <= 0:
-            eye_size = 1
-        eyes = [
-            (int(le_x - eye_size // 2), int(le_y - eye_size // 2), eye_size, eye_size),
-            (int(re_x - eye_size // 2), int(re_y - eye_size // 2), eye_size, eye_size)
-        ]
-
-        return face_box, sorted(eyes, key=lambda e: e[0])
+        # ── 2. MediaPipe Fallback ──────────────────────────────────────────
+        return detect_face_mediapipe(cv_img)
+        
     except Exception as e:
         logger.error(f"Error in detect_face_and_eyes: {e}", exc_info=True)
-        return None, None
+        return None, None, None
 
 def align_and_detect(pil_img):
     """

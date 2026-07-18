@@ -1,6 +1,6 @@
 # 📷 AI Passport Photo Studio
 
-> A professional, offline-capable AI-powered passport photo generator that produces **print-ready, biometrically compliant** photos for **34+ countries** — no cloud service required.
+> A professional, enterprise-grade offline-capable AI-powered passport photo generator that produces **print-ready, biometrically compliant** photos for **195+ countries** and multiple document profiles — no cloud service required.
 
 ---
 
@@ -8,16 +8,18 @@
 
 | Feature | Details |
 |---|---|
-| 🌍 **34+ Country Profiles** | USA, UK, India, Germany, UAE, Japan, China, Australia, and more |
-| 🤖 **AI Face Detection** | MediaPipe or RetinaFace landmark-based alignment & auto-rotation |
-| ✂️ **Smart Background Removal** | Powered by `rembg` (u2net, birefnet, and more) |
-| 🎨 **Custom Backgrounds** | Replace background with any solid colour (white, off-white, blue, etc.) |
-| 🖨️ **Printable Sheet Generator** | Auto-fill A4 / Letter / 4×6 / 5×7 sheets with cutting guides |
-| 📄 **PDF Export** | One-click print-ready PDF output at 300 DPI |
-| 🔬 **HD Super-Resolution** | Multi-step computational sharpening pipeline (+ optional Real-ESRGAN) |
-| 🌈 **Image Enhancement** | Brightness, contrast, sharpness, saturation sliders with live preview |
-| 📊 **Quality Assessment** | BRISQUE-inspired IQA score and auto-suggest enhancement values |
-| 🖥️ **Dual UI** | Full-featured **Streamlit** app + REST **FastAPI** backend with HTML/JS frontend |
+| 🌍 **195+ Country Profiles** | Supports 195+ UN countries, each including Passport, Visa, ID Card, Residence Permit, and Driving License rules |
+| 🤖 **AI Face Detection** | RetinaFace ResNet-50 with MediaPipe Face Mesh fallback; extracts eyes, nose, mouth, chin, ears, and shoulders |
+| 📐 **3D Pose Estimation** | Measures head Yaw, Pitch, and Roll angles to enforce strict biometric constraints |
+| ⚖️ **Biometric Alignment** | Eye leveling, head tilt correction, camera rotation alignment, and automatic centering |
+| ✂️ **Smart Background Removal** | Powered by `rembg` (with BRIA RMBG 2.0 and isnet-general-use support) with alpha edge feathering |
+| 🎨 **Custom Backgrounds** | Fills backgrounds with White, Off-White, Blue, or Red according to target country specifications |
+| 🖨️ **Printable Sheet Generator** | Auto-fills A4, Letter, Legal, 4×6, and 5×7 sheets with cutting lines, trim marks, registration marks, and bleed areas |
+| 📄 **PDF Export** | Lossless 300 DPI print-ready PDF export with embedded validation metadata |
+| 🔬 **Face Restoration** | Integrated local **CodeFormer ONNX** face restorer (eyes, hair, skin, details) + **Real-ESRGAN x4plus** upscaler |
+| 🌈 **Advanced Enhancement** | Gray World auto-white balance, CLAHE local contrast, Bilateral filtering (skin tone preservation), HDR shadow boost |
+| 📊 **12-Point Validation** | Strict biometric and image quality scorecard (closed eyes, smile, tilt, lighting, contrast, blur) with PASS/WARN/FAIL status |
+| 🖥️ **Modern Dual UI** | Premium Streamlit application + FastAPI backend with responsive HTML/JS interface (Before/After comparison slider) |
 
 ---
 
@@ -203,13 +205,16 @@ passport_size_maker/
 ├── run.bat                  # Windows one-click launcher
 ├── requirements.txt         # Python dependencies
 ├── .env.example             # Environment variable template
+├── scripts/
+│   └── generate_country_rules.py # Rules database compiler script
 │
 ├── models/                  # AI & image processing engines
-│   ├── face_detector.py     # MediaPipe face detection & alignment
-│   ├── bg_removal.py        # Background removal (rembg)
-│   ├── crop_engine.py       # Biometric crop & resize to country spec
-│   ├── enhancement.py       # Brightness / contrast / sharpness / saturation
-│   ├── auto_enhance.py      # AI quality assessment & auto-suggest values
+│   ├── country_rules.json   # Compiled JSON database of 195+ countries
+│   ├── face_detector.py     # RetinaFace + MediaPipe face detection & pose estimation
+│   ├── bg_removal.py        # Background analysis & segmentation (rembg)
+│   ├── crop_engine.py       # Biometric crop & straight alignment engine
+│   ├── enhancement.py       # Bilateral, CLAHE, Gray World auto-enhancers
+│   ├── auto_enhance.py      # Quality evaluation & strict biometric checking
 │   ├── super_resolution.py  # HD sharpening pipeline (+ optional Real-ESRGAN)
 │   ├── layout_generator.py  # Printable sheet grid composition
 │   ├── cutting_lines.py     # Professional crosshair cutting guides
