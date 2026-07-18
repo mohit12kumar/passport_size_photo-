@@ -169,6 +169,15 @@ The system calculates a strict quality score out of 100 based on standard deduct
 
 A photo **passes validation** (Validated PASS, score >= 90%) only if all critical biometric requirements are satisfied. If any check fails, detailed warning tags and corrective instructions are instantly rendered in both FastAPI and Streamlit frontends.
 
+### 📄 Downloadable PDF Compliance Certificates
+For auditing and submission support, the studio generates formal verification documents on demand. The report layout includes:
+*   Target document profile, output resolution, and millimeter dimensions.
+*   Color-coded validation score progress dial.
+*   Full checklist grid displaying status and diagnostic advice for all checks.
+*   A notice block detailing print scaling warnings.
+This report is rendered into standard A4/Letter size using ReportLab.
+
+
 ---
 
 ## ⚡ Performance Benchmarks & Execution Times
