@@ -37,25 +37,30 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PASSPORT_OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(PRINTABLE_OUTPUT_FOLDER, exist_ok=True)
 
-def clean_folders():
-    """Deletes all files inside uploads/ and outputs/ directories to save space."""
+import time
+
+def clean_folders(max_age_seconds: int = 900):
+    """Deletes files inside uploads/ and outputs/ directories that are older than max_age_seconds."""
     folders = [UPLOAD_FOLDER, PASSPORT_OUTPUT_FOLDER, PRINTABLE_OUTPUT_FOLDER]
+    now = time.time()
     for folder in folders:
         if os.path.exists(folder):
             for filename in os.listdir(folder):
                 file_path = os.path.join(folder, filename)
                 try:
-                    if os.path.isfile(file_path) or os.path.islink(file_path):
-                        os.unlink(file_path)
-                    elif os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
+                    mtime = os.path.getmtime(file_path)
+                    if now - mtime > max_age_seconds:
+                        if os.path.isfile(file_path) or os.path.islink(file_path):
+                            os.unlink(file_path)
+                        elif os.path.isdir(file_path):
+                            shutil.rmtree(file_path)
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).warning(f"Failed to delete {file_path}. Reason: {e}")
 
-# Run cleanup on startup to clear any leftover files from previous sessions
+# Run complete cleanup on startup to clear any leftover files from previous sessions
 try:
-    clean_folders()
+    clean_folders(max_age_seconds=0)
 except Exception as clean_err:
     import logging
     logging.getLogger(__name__).warning(f"Startup clean failed: {clean_err}")
@@ -140,7 +145,7 @@ async def get_paper_sizes():
 async def api_cleanup():
     """Manually clears all upload and output files."""
     try:
-        clean_folders()
+        clean_folders(max_age_seconds=0)
         return {"success": True, "message": "All previous data cleared successfully."}
     except Exception as e:
         import logging
