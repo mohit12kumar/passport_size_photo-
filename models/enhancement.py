@@ -65,23 +65,77 @@ def _apply_gray_world_awb(img_np: np.ndarray) -> np.ndarray:
         return img_np
 
 
+def _apply_skin_preservation_denoise(img_bgr):
+    """
+    Applies bilateral filtering (edge-preserving denoise) selectively to skin tones.
+    This preserves hair, eyebrow, and eye details while smoothing out skin blemishes.
+    """
+    try:
+        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        # HSV skin color range boundaries
+        lower_skin = np.array([0, 15, 60], dtype=np.uint8)
+        upper_skin = np.array([20, 150, 255], dtype=np.uint8)
+        mask = cv2.inRange(hsv, lower_skin, upper_skin)
+        
+        # Soften mask boundary
+        mask = cv2.GaussianBlur(mask, (9, 9), 0)
+        mask_norm = mask.astype(np.float32) / 255.0
+        mask_norm = np.expand_dims(mask_norm, axis=2)
+        
+        # Run bilateral filter (edge preserving)
+        denoised = cv2.bilateralFilter(img_bgr, d=5, sigmaColor=20, sigmaSpace=20)
+        
+        # Blend skin regions with denoised, keep others original
+        blended = img_bgr * (1.0 - mask_norm) + denoised * mask_norm
+        return np.clip(blended, 0, 255).astype(np.uint8)
+    except Exception as e:
+        logger.warning(f"Skin preservation denoise skipped: {e}")
+        return img_bgr
+
+def _apply_hdr_boost(img_bgr):
+    """
+    Enhances exposure locally by boosting shadows and pulling down hot highlights.
+    Prevents face shadows and direct camera flash overexposure.
+    """
+    try:
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        
+        # Shadow mask (L < 110)
+        shadow_mask = cv2.threshold(l_ch, 110, 255, cv2.THRESH_BINARY_INV)[1]
+        shadow_mask = cv2.GaussianBlur(shadow_mask, (15, 15), 0).astype(np.float32) / 255.0
+        
+        # Highlight mask (L > 215)
+        highlight_mask = cv2.threshold(l_ch, 215, 255, cv2.THRESH_BINARY)[1]
+        highlight_mask = cv2.GaussianBlur(highlight_mask, (15, 15), 0).astype(np.float32) / 255.0
+        
+        l_float = l_ch.astype(np.float32)
+        # Gentle shadow boost (up to 15%) & highlight reduction (up to 8%)
+        boosted_l = l_float + (255.0 - l_float) * 0.15 * shadow_mask
+        toned_l = boosted_l - boosted_l * 0.08 * highlight_mask
+        
+        l_new = np.clip(toned_l, 0, 255).astype(np.uint8)
+        lab_new = cv2.merge([l_new, a_ch, b_ch])
+        return cv2.cvtColor(lab_new, cv2.COLOR_LAB2BGR)
+    except Exception as e:
+        logger.warning(f"HDR boost skipped: {e}")
+        return img_bgr
+
 def enhance_image(pil_image, brightness=1.0, contrast=1.0, sharpness=1.0, saturation=1.0,
                   denoise=False, white_balance=False, auto_clahe=False, gamma=1.0):
     """
-    Enhance the image's brightness, contrast, sharpness, saturation using PIL.
-    Optionally applies OpenCV-based Denoising, White Balance, CLAHE, and Gamma Correction.
+    Enhance portrait photography using advanced CV algorithms and PIL fallback adjustments.
     """
     if pil_image is None:
-        logger.error("enhance_image received None image")
         return None
 
     try:
         img = pil_image.copy()
     except Exception as e:
-        logger.error(f"Failed to copy PIL image in enhance_image: {e}", exc_info=True)
+        logger.error(f"Failed to copy image in enhance_image: {e}", exc_info=True)
         return pil_image
 
-    # ── Step 1: Optional White Balance (AWB) ────────────────────────
+    # ── Step 1: White Balance (AWB) ────────────────────────
     if white_balance and CV2_AVAILABLE:
         try:
             img_np = np.array(img.convert("RGB"))
@@ -90,32 +144,39 @@ def enhance_image(pil_image, brightness=1.0, contrast=1.0, sharpness=1.0, satura
         except Exception as e:
             logger.warning(f"Failed to apply AWB: {e}")
 
-    # ── Step 2: Optional Denoising (fastNlMeansDenoisingColored) ─────
+    # ── Step 2: Denoise with Skin & Edge Preservation ──────
     if denoise and CV2_AVAILABLE:
         try:
             img_np = np.array(img.convert("RGB"))
             img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-            denoised_bgr = cv2.fastNlMeansDenoisingColored(img_bgr, None, 10, 10, 7, 21)
+            denoised_bgr = _apply_skin_preservation_denoise(img_bgr)
             denoised_rgb = cv2.cvtColor(denoised_bgr, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(denoised_rgb)
         except Exception as e:
             logger.warning(f"Failed to apply denoising: {e}")
 
-    # ── Step 2.5: Optional CLAHE (Adaptive Brightness & Contrast) ─────
+    # ── Step 3: Local Contrast & HDR Exposure Boost ────────
     if auto_clahe and CV2_AVAILABLE:
         try:
             img_np = np.array(img.convert("RGB"))
-            lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
-            l_channel, a, b_ch = cv2.split(lab)
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            
+            # Apply shadow/highlight mapping
+            hdr_bgr = _apply_hdr_boost(img_bgr)
+            
+            # Apply CLAHE on L-channel
+            lab = cv2.cvtColor(hdr_bgr, cv2.COLOR_BGR2LAB)
+            l_ch, a, b = cv2.split(lab)
             clahe_obj = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            cl = clahe_obj.apply(l_channel)
-            limg = cv2.merge((cl, a, b_ch))
+            cl = clahe_obj.apply(l_ch)
+            limg = cv2.merge((cl, a, b))
             rgb = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
+            
             img = Image.fromarray(rgb)
         except Exception as e:
-            logger.warning(f"Failed to apply CLAHE: {e}")
+            logger.warning(f"Failed to apply CLAHE/HDR boost: {e}")
 
-    # ── Step 2.7: Optional Gamma Correction ─────────────────────────
+    # ── Step 4: Gamma Correction ─────────────────────────
     if gamma != 1.0 and CV2_AVAILABLE:
         try:
             img_np = np.array(img.convert("RGB"))
@@ -124,46 +185,38 @@ def enhance_image(pil_image, brightness=1.0, contrast=1.0, sharpness=1.0, satura
         except Exception as e:
             logger.warning(f"Failed to apply Gamma Correction: {e}")
 
-    # Normalize and clamp inputs to prevent PIL error/crash
+    # Normalise slider inputs
     try:
         b_val = max(0.0, min(10.0, float(brightness)))
         c_val = max(0.0, min(10.0, float(contrast)))
         sa_val = max(0.0, min(10.0, float(saturation)))
         sh_val = max(-10.0, min(10.0, float(sharpness)))
-    except Exception as e:
-        logger.error(f"Input type conversion failed in enhance_image parameters: {e}")
+    except Exception:
         b_val, c_val, sa_val, sh_val = 1.0, 1.0, 1.0, 1.0
 
-    # ── Step 3: Brightness ──────────────────────────────────────────
+    # ── Step 5: PIL adjustments ──────────────────────────
     if b_val != 1.0:
         try:
-            enhancer = ImageEnhance.Brightness(img)
-            img = enhancer.enhance(b_val)
+            img = ImageEnhance.Brightness(img).enhance(b_val)
         except Exception as e:
-            logger.warning(f"Failed to apply brightness enhancer: {e}")
+            logger.warning(f"Failed to adjust brightness: {e}")
 
-    # ── Step 4: Contrast ─────────────────────────────────────────────
     if c_val != 1.0:
         try:
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(c_val)
+            img = ImageEnhance.Contrast(img).enhance(c_val)
         except Exception as e:
-            logger.warning(f"Failed to apply contrast enhancer: {e}")
+            logger.warning(f"Failed to adjust contrast: {e}")
 
-    # ── Step 5: Saturation ───────────────────────────────────────────
     if sa_val != 1.0:
         try:
-            enhancer = ImageEnhance.Color(img)
-            img = enhancer.enhance(sa_val)
+            img = ImageEnhance.Color(img).enhance(sa_val)
         except Exception as e:
-            logger.warning(f"Failed to apply saturation enhancer: {e}")
+            logger.warning(f"Failed to adjust saturation: {e}")
 
-    # ── Step 6: Sharpness ────────────────────────────────────────────
     if sh_val != 1.0:
         try:
-            enhancer = ImageEnhance.Sharpness(img)
-            img = enhancer.enhance(sh_val)
+            img = ImageEnhance.Sharpness(img).enhance(sh_val)
         except Exception as e:
-            logger.warning(f"Failed to apply sharpness enhancer: {e}")
+            logger.warning(f"Failed to adjust sharpness: {e}")
 
     return img

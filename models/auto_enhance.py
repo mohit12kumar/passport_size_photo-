@@ -9,6 +9,7 @@ Also provides a BRISQUE-inspired Image Quality Assessment (IQA) score out of 100
 
 import numpy as np
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -403,13 +404,19 @@ def evaluate_biometric_compliance(pil_image, face_box, eyes, auto_angle, country
                 "message": "Photo dimensions match official specifications."
             }
 
-    # Check H: Initial Head Roll/Tilt (Warning)
+    # Extract pose angles from face_box metadata
+    pose = face_box.get("pose", {}) if face_box else {}
+    yaw = pose.get("yaw", 0.0)
+    pitch = pose.get("pitch", 0.0)
+    roll = pose.get("roll", auto_angle)
+
+    # Check H: Head Roll/Tilt (Warning)
     max_tilt = rule.get("rotation_max_deg", 5)
-    if abs(auto_angle) > max_tilt:
+    if abs(roll) > max_tilt:
         checks["tilt"] = {
             "passed": False,
             "status": "WARN",
-            "message": f"Head is tilted ({auto_angle:.1f}°). Maximum allowed is {max_tilt}° (pipeline aligned it)."
+            "message": f"Head is tilted ({roll:.1f}°). Maximum allowed is {max_tilt}° (pipeline aligned it)."
         }
         score -= 5
     else:
@@ -423,7 +430,7 @@ def evaluate_biometric_compliance(pil_image, face_box, eyes, auto_angle, country
     if face_box and "x" in face_box and "w" in face_box:
         face_center_x = face_box["x"] + face_box["w"] / 2.0
         center_deviation_ratio = abs(face_center_x - w / 2.0) / w
-        if center_deviation_ratio > 0.10: # >10% deviation
+        if center_deviation_ratio > 0.10:
             checks["centering"] = {
                 "passed": False,
                 "status": "WARN",
@@ -439,10 +446,105 @@ def evaluate_biometric_compliance(pil_image, face_box, eyes, auto_angle, country
     else:
         checks["centering"] = {"passed": True, "status": "PASS", "message": "Centering check passed."}
 
-    # Checks J & K: Head Coverage and Eye Level (Only checked on final cropped/processed image)
+    # Check J: 3D Pose - Yaw & Pitch (Critical)
+    if abs(yaw) > 10.0:
+        checks["yaw"] = {
+            "passed": False,
+            "status": "FAIL",
+            "message": f"Head turned too far left/right (Yaw: {yaw:.1f}°). Look straight at the camera."
+        }
+        critical_failures += 1
+        score -= 15
+    else:
+        checks["yaw"] = {
+            "passed": True,
+            "status": "PASS",
+            "message": f"Head horizontal angle is neutral (Yaw: {yaw:.1f}°)."
+        }
+
+    if abs(pitch) > 10.0:
+        checks["pitch"] = {
+            "passed": False,
+            "status": "FAIL",
+            "message": f"Head tilted too far up/down (Pitch: {pitch:.1f}°). Look straight at the camera."
+        }
+        critical_failures += 1
+        score -= 15
+    else:
+        checks["pitch"] = {
+            "passed": True,
+            "status": "PASS",
+            "message": f"Head vertical angle is neutral (Pitch: {pitch:.1f}°)."
+        }
+
+    # Check K: Smile / Expression Check (Warning/Fail depending on country rules)
+    smile_detected = False
+    if face_box and "landmarks" in face_box and face_box["landmarks"]:
+        lmks = face_box["landmarks"]
+        if lmks and all(k in lmks for k in ("left_mouth", "right_mouth", "left_eye", "right_eye")):
+            le = lmks["left_eye"]
+            re = lmks["right_eye"]
+            ml = lmks["left_mouth"]
+            mr = lmks["right_mouth"]
+            
+            eye_dist = math.sqrt((re[0] - le[0])**2 + (re[1] - le[1])**2)
+            mouth_w = math.sqrt((mr[0] - ml[0])**2 + (mr[1] - ml[1])**2)
+            ratio = mouth_w / max(1.0, eye_dist)
+            if ratio > 0.64:
+                smile_detected = True
+
+    if smile_detected:
+        checks["expression"] = {
+            "passed": False,
+            "status": "WARN",
+            "message": "Smile/open mouth detected. Standard rules require a neutral expression."
+        }
+        score -= 8
+    else:
+        checks["expression"] = {
+            "passed": True,
+            "status": "PASS",
+            "message": "Expression appears neutral."
+        }
+
+    # Check L: Face Lighting Shadows & Asymmetry (Warning)
+    shadows_detected = False
+    if face_box and all(k in face_box for k in ("x", "y", "w", "h")) and lum_data is not None:
+        try:
+            fx, fy, fw, fh = face_box["x"], face_box["y"], face_box["w"], face_box["h"]
+            img_h, img_w = rgb.shape[:2]
+            x1, y1 = max(0, int(fx)), max(0, int(fy))
+            x2, y2 = min(img_w, int(fx + fw)), min(img_h, int(fy + fh))
+            
+            if x2 > x1 and y2 > y1:
+                face_crop_lum = lum[y1:y2, x1:x2]
+                mid_x = face_crop_lum.shape[1] // 2
+                if mid_x > 0:
+                    left_half = face_crop_lum[:, :mid_x]
+                    right_half = face_crop_lum[:, mid_x:]
+                    diff = abs(np.mean(left_half) - np.mean(right_half))
+                    if diff > 35.0:
+                        shadows_detected = True
+        except Exception as sh_err:
+            logger.warning(f"Failed to estimate face shadows: {sh_err}")
+
+    if shadows_detected:
+        checks["shadows"] = {
+            "passed": False,
+            "status": "WARN",
+            "message": "Uneven face lighting/shadows detected. Ensure lighting is balanced."
+        }
+        score -= 8
+    else:
+        checks["shadows"] = {
+            "passed": True,
+            "status": "PASS",
+            "message": "Face lighting is even and symmetric."
+        }
+
+    # Checks M & N: Head Coverage and Eye Level (Only checked on final cropped/processed image)
     if is_processed and face_box and "h" in face_box and "y" in face_box:
         # Head Coverage Ratio (Chin to crown height ratio)
-        # estimated head height: face_box["h"] * 1.35
         head_height_est = face_box["h"] * 1.35
         head_ratio = head_height_est / h
         ratio_min = rule.get("head_height_ratio_min", 0.50)

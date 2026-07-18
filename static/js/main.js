@@ -870,12 +870,16 @@ function renderBiometricReport(score, complianceOrAnalysis) {
             eyes: c.eyes_aligned || {status: "FAIL", message: "Eyes misaligned/undetected"},
             centering: c.centering || {status: "PASS", message: "Face centering is compliant"},
             tilt: c.tilt || {status: "PASS", message: "Head tilt is straight"},
+            yaw: c.yaw || {status: "PASS", message: "Head horizontal angle is neutral"},
+            pitch: c.pitch || {status: "PASS", message: "Head vertical angle is neutral"},
             head_ratio: c.head_ratio || {status: "PASS", message: "Head coverage is compliant"},
             eye_level: c.eye_level || {status: "PASS", message: "Eye level height is compliant"},
             sharpness: c.sharpness || {status: "PASS", message: "Image is sharp"},
             brightness: c.brightness || {status: "PASS", message: "Image brightness is sufficient"},
             overexposure: c.overexposure || {status: "PASS", message: "No severe overexposure"},
+            shadows: c.shadows || {status: "PASS", message: "Face lighting is symmetric"},
             contrast: c.contrast || {status: "PASS", message: "Image contrast is sufficient"},
+            expression: c.expression || {status: "PASS", message: "Expression is neutral"},
             background: {status: bgRemovalToggle.checked ? "PASS" : "FAIL", message: bgRemovalToggle.checked ? "Background replaced" : "Background not replaced"},
             dimensions: c.resolution || {status: "PASS", message: "Dimensions are compliant"}
         };
@@ -897,12 +901,16 @@ function renderBiometricReport(score, complianceOrAnalysis) {
             eyes: {status: eyesPassed ? "PASS" : "FAIL", message: "Eyes misaligned/undetected"},
             centering: {status: "PASS", message: "Face centering is compliant"},
             tilt: {status: "PASS", message: "Head tilt is straight"},
+            yaw: {status: "PASS", message: "Head horizontal angle is neutral"},
+            pitch: {status: "PASS", message: "Head vertical angle is neutral"},
             head_ratio: {status: "PASS", message: "Head coverage is compliant"},
             eye_level: {status: "PASS", message: "Eye level height is compliant"},
             sharpness: {status: !analysis.is_blurry ? "PASS" : "FAIL", message: "Image is blurry"},
             brightness: {status: !analysis.is_dark ? "PASS" : "FAIL", message: "Photo is too dark"},
             overexposure: {status: !analysis.is_overexposed ? "PASS" : "FAIL", message: "Photo is overexposed"},
+            shadows: {status: "PASS", message: "Face lighting is symmetric"},
             contrast: {status: !analysis.is_low_contrast ? "PASS" : "FAIL", message: "Image contrast is too low"},
+            expression: {status: "PASS", message: "Expression is neutral"},
             background: {status: bgRemovalToggle.checked ? "PASS" : "FAIL", message: "Background not replaced"},
             dimensions: {status: "PASS", message: "Dimensions are compliant"}
         };
@@ -946,12 +954,16 @@ function renderBiometricReport(score, complianceOrAnalysis) {
     updateCheckRow('.chk-eyes', checks.eyes, "PASSED", "FAILED");
     updateCheckRow('.chk-centering', checks.centering, "PASSED", "FAILED");
     updateCheckRow('.chk-tilt', checks.tilt, "PASSED", "FAILED");
+    updateCheckRow('.chk-yaw', checks.yaw, "PASSED", "FAILED");
+    updateCheckRow('.chk-pitch', checks.pitch, "PASSED", "FAILED");
     updateCheckRow('.chk-head-ratio', checks.head_ratio, "PASSED", "FAILED");
     updateCheckRow('.chk-eye-level', checks.eye_level, "PASSED", "FAILED");
     updateCheckRow('.chk-sharpness', checks.sharpness, "PASSED", "FAILED");
     updateCheckRow('.chk-brightness', checks.brightness, "PASSED", "FAILED");
     updateCheckRow('.chk-overexposure', checks.overexposure, "PASSED", "FAILED");
+    updateCheckRow('.chk-shadows', checks.shadows, "PASSED", "FAILED");
     updateCheckRow('.chk-contrast', checks.contrast, "PASSED", "FAILED");
+    updateCheckRow('.chk-expression', checks.expression, "PASSED", "FAILED");
     updateCheckRow('.chk-background', checks.background, "PASSED", "FAILED");
     updateCheckRow('.chk-dimensions', checks.dimensions, "PASSED", "FAILED");
 

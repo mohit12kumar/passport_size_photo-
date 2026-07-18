@@ -323,7 +323,7 @@ def detect_face_and_eyes(cv_img):
 def align_and_detect(pil_img):
     """
     Performs face detection, aligns (rotates) the image based on eye coordinates,
-    and returns the aligned image and the face bounding box in that aligned image.
+    estimates 3D head pose (yaw, pitch, roll), and returns the aligned image and face metadata.
     """
     try:
         if pil_img is None:
@@ -335,8 +335,8 @@ def align_and_detect(pil_img):
 
         orig_h, orig_w = cv_img.shape[:2]
 
-        # 1. Detect face and eyes on the original image
-        face_box, eyes = detect_face_and_eyes(cv_img)
+        # 1. Detect face, eyes, and landmarks on the original image
+        face_box, eyes, landmarks = detect_face_and_eyes(cv_img)
 
         angle = 0.0
         aligned_cv = cv_img.copy()
@@ -363,10 +363,11 @@ def align_and_detect(pil_img):
                         aligned_cv = rotated_cv
 
                     # 2. Re-detect face on the aligned image
-                    aligned_face_box, aligned_eyes = detect_face_and_eyes(aligned_cv)
+                    aligned_face_box, aligned_eyes, aligned_landmarks = detect_face_and_eyes(aligned_cv)
                     if aligned_face_box is not None:
                         face_box = aligned_face_box
                         eyes = aligned_eyes
+                        landmarks = aligned_landmarks
             except Exception as inner_e:
                 logger.error(f"Error during alignment calculations: {inner_e}", exc_info=True)
 
@@ -378,14 +379,27 @@ def align_and_detect(pil_img):
             fy = int(orig_h * 0.15)
             face_box = (fx, fy, fw, fh)
             eyes = []
+            landmarks = None
+
+        # Estimate pose
+        yaw, pitch, roll = 0.0, 0.0, 0.0
+        if landmarks:
+            yaw, pitch, roll = estimate_head_pose(landmarks, aligned_cv.shape[1], aligned_cv.shape[0])
 
         face_data = {
             "x": int(face_box[0]),
             "y": int(face_box[1]),
             "w": int(face_box[2]),
-            "h": int(face_box[3])
+            "h": int(face_box[3]),
+            "pose": {
+                "yaw": round(yaw, 2),
+                "pitch": round(pitch, 2),
+                "roll": round(roll, 2)
+            },
+            "landmarks": landmarks
         }
 
+        # Format eyes data
         eyes_data = []
         if eyes:
             for eye in eyes:
@@ -406,6 +420,7 @@ def align_and_detect(pil_img):
             "x": int(orig_w * 0.25),
             "y": int(orig_h * 0.15),
             "w": int(orig_w * 0.5),
-            "h": int(orig_h * 0.6)
+            "h": int(orig_h * 0.6),
+            "pose": {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}
         }
         return pil_img, face_data, [], 0.0

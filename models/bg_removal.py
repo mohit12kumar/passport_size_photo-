@@ -86,6 +86,8 @@ def _clean_alpha_mask(alpha: np.ndarray,
                       high_thresh: int = 240) -> np.ndarray:
     """
     Gently clean up the raw alpha mask from rembg.
+    Uses morphological operations to eliminate small background dust and fill holes,
+    then applies Gaussian blur feathering.
     """
     try:
         if alpha is None or not hasattr(alpha, 'shape'):
@@ -93,13 +95,24 @@ def _clean_alpha_mask(alpha: np.ndarray,
 
         cleaned = alpha.astype(np.float32)
 
-        # Only hard-clip the very lowest confidence background pixels
+        # Threshold to clip low-confidence pixels
         cleaned[cleaned < low_thresh]  = 0.0
         cleaned[cleaned > high_thresh] = 255.0
 
-        pil_alpha = Image.fromarray(cleaned.astype(np.uint8), mode='L')
+        cleaned_uint8 = cleaned.astype(np.uint8)
+        
+        # Morphological opening (remove noise speckles) and closing (fill small voids)
+        try:
+            import cv2
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            cleaned_uint8 = cv2.morphologyEx(cleaned_uint8, cv2.MORPH_OPEN, kernel)
+            cleaned_uint8 = cv2.morphologyEx(cleaned_uint8, cv2.MORPH_CLOSE, kernel)
+        except Exception as morph_err:
+            logger.warning(f"Morphological mask cleaning skipped: {morph_err}")
 
-        # Gentle Gaussian blur for soft, feathered hair edges
+        pil_alpha = Image.fromarray(cleaned_uint8, mode='L')
+
+        # Feather alpha edges
         if blur_radius > 0:
             pil_alpha = pil_alpha.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 

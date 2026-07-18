@@ -21,8 +21,103 @@ import logging
 import os
 import numpy as np
 from PIL import Image, ImageFilter, ImageEnhance, ImageOps
+import cv2
+
+try:
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except ImportError:
+    ONNX_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+# ── CodeFormer ONNX Face Restoration Class ──────────────────────────────────
+class CodeFormerRestorer:
+    def __init__(self):
+        self.session = None
+        self.initialized = False
+        
+    def _lazy_init(self):
+        if self.initialized:
+            return
+        if not ONNX_AVAILABLE:
+            logger.warning("onnxruntime is not installed. CodeFormer cannot initialize.")
+            return
+        try:
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            model_path = os.path.join(project_root, "gfpgan", "weights", "codeformer.onnx")
+            if not os.path.isfile(model_path):
+                logger.warning(f"CodeFormer ONNX weights not found at: {model_path}")
+                return
+            
+            # Determine execution providers (prefer CUDA, fallback to CPU)
+            import torch
+            providers = ['CPUExecutionProvider']
+            if torch.cuda.is_available():
+                providers = [('CUDAExecutionProvider', {"cudnn_conv_algo_search": "DEFAULT"}), 'CPUExecutionProvider']
+                
+            self.session = ort.InferenceSession(model_path, providers=providers)
+            self.initialized = True
+            logger.info("CodeFormer ONNX Restorer successfully initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize CodeFormer ONNX: {e}")
+            
+    def restore_face(self, face_img_rgb, w=0.75):
+        """
+        Enhance a cropped face image using CodeFormer ONNX.
+        """
+        self._lazy_init()
+        if not self.initialized or self.session is None:
+            return face_img_rgb
+            
+        try:
+            # Format inputs: face_img must be converted to RGB numpy array
+            img_np = np.array(face_img_rgb.convert("RGB"))
+            h_orig, w_orig = img_np.shape[:2]
+            
+            # Preprocess: resize to 512x512, float32, normalize, transpose to NCHW
+            img_resized = cv2.resize(img_np, (512, 512), interpolation=cv2.INTER_LINEAR)
+            img_float = img_resized.astype(np.float32) / 255.0
+            img_norm = (img_float - 0.5) / 0.5
+            img_chw = img_norm.transpose((2, 0, 1))
+            img_nchw = np.expand_dims(img_chw, axis=0).astype(np.float32)
+            
+            # Fidelity weight parameter w
+            w_input = np.array([w], dtype=np.double)
+            
+            inputs = self.session.get_inputs()
+            input_names = [inp.name for inp in inputs]
+            
+            # Fit inputs to model nodes
+            feed_dict = {}
+            if len(input_names) >= 2:
+                feed_dict[input_names[0]] = img_nchw
+                feed_dict[input_names[1]] = w_input
+            else:
+                feed_dict[input_names[0]] = img_nchw
+                
+            outputs = self.session.run(None, feed_dict)
+            output_tensor = outputs[0][0]
+            
+            # Postprocess: transpose back to HWC, denormalize, scale to uint8
+            img_out_chw = output_tensor.transpose((1, 2, 0))
+            img_out_norm = (img_out_chw.clip(-1, 1) + 1.0) * 0.5
+            img_out_uint8 = (img_out_norm * 255.0).clip(0, 255).astype(np.uint8)
+            
+            # Scale back to cropped face box original dimensions
+            img_restored = cv2.resize(img_out_uint8, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
+            return Image.fromarray(img_restored)
+        except Exception as e:
+            logger.warning(f"CodeFormer face restoration failed: {e}", exc_info=True)
+            return face_img_rgb
+
+_codeformer_restorer = None
+
+def _get_codeformer_restorer():
+    global _codeformer_restorer
+    if _codeformer_restorer is None:
+        _codeformer_restorer = CodeFormerRestorer()
+    return _codeformer_restorer
 
 # ── Optional Real-ESRGAN face/image super-resolution ─────────────────────────
 REALESRGAN_AVAILABLE = False
@@ -169,7 +264,7 @@ def _pil_hd_pipeline(pil_image: Image.Image, target_w: int, target_h: int) -> Im
         # ── Step 4: Multi-pass Unsharp Mask ───────────────────────────────────────
         # Pass A — wide radius, moderate strength (global structure)
         img = img.filter(ImageFilter.UnsharpMask(radius=2.0, percent=150, threshold=1))
-        # Pass B — tight radius, high strength (fine edge crispness)
+        # Pass B — tight radius, high strength (fine edge crisis)
         img = img.filter(ImageFilter.UnsharpMask(radius=0.8, percent=200, threshold=2))
 
         # ── Step 5: Detail convolution kernel ────────────────────────────────────
@@ -191,53 +286,74 @@ def _pil_hd_pipeline(pil_image: Image.Image, target_w: int, target_h: int) -> Im
 
 def enhance_hd(pil_image: Image.Image, enable_ai: bool = True) -> Image.Image:
     """
-    Enhance a passport photo to HD / studio quality using Real-ESRGAN.
-
-    Args:
-        pil_image – Input PIL Image (any mode).
-        enable_ai  – If True, uses Real-ESRGAN super-resolution.
-                     If False, falls back to the fast PIL pipeline.
-
-    Returns:
-        Enhanced PIL Image in RGB mode at the same resolution as input.
+    Enhance a passport photo using CodeFormer Face Restoration and Real-ESRGAN.
+    
+    Guards Real-ESRGAN execution to run only on low-resolution inputs (< 600px)
+    to optimize CPU speeds, and uses CodeFormer face enhancement.
     """
     if pil_image is None:
-        logger.error("enhance_hd received None image")
         return None
 
     try:
         target_w, target_h = pil_image.size
 
-        # If AI is enabled and Real-ESRGAN weights/upsampler are initialized, run it.
+        # ── 1. CodeFormer Face Restoration (Local ONNX) ─────────────────────
         if enable_ai:
+            try:
+                restorer = _get_codeformer_restorer()
+                restorer._lazy_init()
+                if restorer.initialized:
+                    from models.face_detector import detect_face_and_eyes, pil_to_cv2
+                    cv_img = pil_to_cv2(pil_image)
+                    face_box, eyes, landmarks = detect_face_and_eyes(cv_img)
+                    
+                    if face_box:
+                        fx, fy, fw, fh = face_box
+                        
+                        # Add biometric padding around the face box (ears, hair, chin)
+                        pad_x = int(fw * 0.25)
+                        pad_y = int(fh * 0.35)
+                        
+                        x1 = max(0, fx - pad_x)
+                        y1 = max(0, fy - pad_y)
+                        x2 = min(pil_image.width, fx + fw + pad_x)
+                        y2 = min(pil_image.height, fy + fh + pad_y)
+                        
+                        face_crop = pil_image.crop((x1, y1, x2, y2))
+                        restored_face = restorer.restore_face(face_crop, w=0.75)
+                        
+                        # Circular feathered blending mask to paste back restored details
+                        mask = Image.new("L", face_crop.size, 0)
+                        from PIL import ImageDraw
+                        draw = ImageDraw.Draw(mask)
+                        draw.ellipse([pad_x, pad_y, face_crop.width - pad_x, face_crop.height - pad_y], fill=255)
+                        mask = mask.filter(ImageFilter.GaussianBlur(radius=12))
+                        
+                        pil_image = pil_image.copy()
+                        pil_image.paste(restored_face, (x1, y1), mask)
+                        logger.info("CodeFormer face restoration successfully applied and blended.")
+            except Exception as cf_err:
+                logger.warning(f"CodeFormer face restoration skipped/failed: {cf_err}")
+
+        # ── 2. Real-ESRGAN Super-Resolution (Guarded) ─────────────────────────
+        # Only run Real-ESRGAN if enable_ai is True AND the photo is low-resolution (< 600px width/height)
+        is_low_res = (target_w < 600 or target_h < 600)
+        
+        if enable_ai and is_low_res:
             upsampler = _get_realesrgan_upsampler()
             if upsampler is not None:
                 try:
-                    # ── Resize guard: Prevent high-res OOM/lag on CPU ──────────────────
-                    # Passport photos don't need huge input dimensions. Downscale to max 1024px.
-                    max_size = 512 # Keep it smaller for Real-ESRGAN to prevent CPU locking
-                    w, h = pil_image.size
-                    if w > max_size or h > max_size:
-                        ratio = max_size / max(w, h)
-                        new_size = (int(w * ratio), int(h * ratio))
-                        logger.info(f"Resizing image from {pil_image.size} to {new_size} for Real-ESRGAN processing")
-                        work_img = pil_image.resize(new_size, Image.Resampling.LANCZOS)
-                    else:
-                        work_img = pil_image.copy()
-
-                    rgb_img = work_img.convert("RGB")
-                    import cv2
+                    logger.info("Input resolution is low; executing Real-ESRGAN super-resolution.")
+                    rgb_img = pil_image.convert("RGB")
                     img_bgr = cv2.cvtColor(np.array(rgb_img), cv2.COLOR_RGB2BGR)
                     enhanced_bgr = _enhance_realesrgan(img_bgr)
                     enhanced_rgb = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
-                    result = Image.fromarray(enhanced_rgb)
-                    logger.info("Real-ESRGAN face restoration complete (2x).")
-                    return result
+                    return Image.fromarray(enhanced_rgb)
                 except Exception as e:
-                    logger.warning(f"Real-ESRGAN enhancement failed ({e}). Falling back to PIL pipeline.")
+                    logger.warning(f"Real-ESRGAN failed ({e}). Falling back to fast HD pipeline.")
 
-        # Fallback/Default: PIL pipeline
-        logger.info("Applying PIL HD enhancement pipeline (2x).")
+        # Fallback/Default: fast PIL HD pipeline
+        logger.info("Applying fast PIL HD sharpening pipeline.")
         rgb_img = pil_image.convert("RGB")
         return _pil_hd_pipeline(rgb_img, target_w * 2, target_h * 2)
     except Exception as e:
