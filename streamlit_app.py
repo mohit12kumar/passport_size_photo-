@@ -717,6 +717,35 @@ if st.session_state.orig_image is not None:
                 _check("background", f"Background Replaced ({bg_color})")
                 _check("resolution", f"Dimensions ({country_rule['width_mm']}x{country_rule['height_mm']}mm)")
 
+                # Download Compliance Certificate PDF
+                try:
+                    from utils.pdf_generator import generate_compliance_pdf
+                    import tempfile
+                    
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        report_path = os.path.join(tmp_dir, f"compliance_report_{country_key}.pdf")
+                        generate_compliance_pdf(
+                            compliance_data=compliance,
+                            output_pdf_path=report_path,
+                            country_name=country_key,
+                            doc_type="Passport",
+                            quality_score=score
+                        )
+                        with open(report_path, "rb") as f:
+                            report_bytes = f.read()
+                            
+                    st.write("")
+                    st.download_button(
+                        label="📥 Download Compliance Certificate (PDF)",
+                        data=report_bytes,
+                        file_name=f"compliance_report_{country_key}.pdf",
+                        mime="application/pdf",
+                        help="Download the formal biometric compliance certificate sheet",
+                        use_container_width=True
+                    )
+                except Exception as pdf_err:
+                    st.error(f"❌ Failed to build compliance certificate PDF: {pdf_err}")
+
                 if layout_info:
                     st.write("---")
                     st.write("**Layout Specifications:**")

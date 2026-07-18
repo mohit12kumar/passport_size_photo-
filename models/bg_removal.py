@@ -143,6 +143,59 @@ def _run_rembg(img: Image.Image, session, alpha_matting: bool) -> Image.Image:
         )
 
 
+def is_background_compliant(pil_image, target_hex_color: str) -> bool:
+    """
+    Analyzes image corners to determine if the background is already uniform
+    and matches the required target color, avoiding redundant segmentation.
+    """
+    if not target_hex_color or target_hex_color.strip().lower() == "transparent":
+        return False
+        
+    try:
+        # Convert PIL image to RGB numpy array
+        img_np = np.array(pil_image.convert("RGB"))
+        h, w = img_np.shape[:2]
+        
+        # Crop 15x15 corners
+        box_sz = min(15, int(min(w, h) * 0.05))
+        if box_sz < 3:
+            return False
+            
+        corners = [
+            img_np[0:box_sz, 0:box_sz],          # Top-left
+            img_np[0:box_sz, w-box_sz:w],        # Top-right
+        ]
+        
+        # Flatten corner pixels
+        pixels = np.concatenate([c.reshape(-1, 3) for c in corners], axis=0)
+        
+        # Compute mean and standard deviation
+        mean_rgb = np.mean(pixels, axis=0)
+        std_rgb = np.mean(np.std(pixels, axis=0))
+        
+        # 1. Background must be uniform (low std dev)
+        if std_rgb > 12.0:
+            return False
+            
+        # 2. Match target color
+        from PIL import ImageColor
+        try:
+            target_rgb = ImageColor.getcolor(target_hex_color.strip(), "RGB")
+        except Exception:
+            target_rgb = (255, 255, 255)
+            
+        # Euclidean distance in RGB space
+        dist = np.linalg.norm(mean_rgb - np.array(target_rgb))
+        if dist < 18.0:
+            logger.info(f"Background is already compliant (uniformity={std_rgb:.1f}, dist={dist:.1f}). Skipping segmentation.")
+            return True
+            
+        return False
+    except Exception as e:
+        logger.warning(f"Failed background compliance analysis: {e}")
+        return False
+
+
 def remove_background(pil_image: Image.Image, bg_color_hex: str = "#FFFFFF") -> Image.Image:
     """
     Remove the background from a passport photo and replace it with a solid colour.
@@ -160,6 +213,15 @@ def remove_background(pil_image: Image.Image, bg_color_hex: str = "#FFFFFF") -> 
     if pil_image is None:
         logger.error("remove_background received None image")
         return Image.new("RGB", (300, 400), (255, 255, 255))
+
+    # Bypasses rembg if the background color matches target requirement
+    try:
+        if is_background_compliant(pil_image, bg_color_hex):
+            if bg_color_hex.strip().lower() == "transparent":
+                return pil_image.convert("RGBA")
+            return pil_image.convert("RGB")
+    except Exception as e:
+        logger.warning(f"Error checking background compliance: {e}")
 
     try:
         img_rgba = pil_image.convert("RGBA")

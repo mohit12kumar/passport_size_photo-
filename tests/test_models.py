@@ -159,3 +159,35 @@ def test_evaluate_biometric_compliance(dummy_image):
     res_center = evaluate_biometric_compliance(dummy_image, bad_center_face, eyes, auto_angle=0.0, country_code="usa", is_processed=False)
     assert res_center["checks"]["centering"]["status"] == "WARN"
 
+
+def test_is_background_compliant():
+    from models.bg_removal import is_background_compliant
+    # Create a solid white PIL image
+    white_img = Image.new("RGB", (300, 300), (255, 255, 255))
+    assert is_background_compliant(white_img, "#FFFFFF") is True
+    assert is_background_compliant(white_img, "#000000") is False
+
+
+def test_generate_compliance_pdf(tmp_path):
+    from utils.pdf_generator import generate_compliance_pdf
+    compliance_data = {
+        "passed": True,
+        "score": 95,
+        "checks": {
+            "face_detected": {"status": "PASS", "message": "Face detected"},
+            "eyes_aligned": {"status": "PASS", "message": "Eyes aligned"},
+            "tilt": {"status": "PASS", "message": "Head tilt is straight"},
+        }
+    }
+    output_pdf = tmp_path / "test_compliance.pdf"
+    res_path = generate_compliance_pdf(
+        compliance_data=compliance_data,
+        output_pdf_path=str(output_pdf),
+        country_name="USA",
+        doc_type="Passport",
+        quality_score=95
+    )
+    assert os.path.exists(res_path)
+    assert output_pdf.stat().st_size > 0
+
+

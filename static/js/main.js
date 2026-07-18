@@ -11,7 +11,9 @@ let appState = {
     autoAngle: 0.0,         // Angle applied during upload face detection
     imageLoaded: false,
     alignedImageObj: null,  // HTML Image object of aligned face
-    selectedColor: "#FFFFFF" // Current bg color replacement
+    selectedColor: "#FFFFFF", // Current bg color replacement
+    lastCompliance: null,    // Stored biometric checks
+    lastScore: 100           // Stored score
 };
 
 // UI Elements
@@ -93,6 +95,7 @@ const processingSpinner = document.getElementById('processingSpinner');
 const spinnerText = document.getElementById('spinnerText');
 const croppedDownloadGroup = document.getElementById('croppedDownloadGroup');
 const downloadCroppedBtn = document.getElementById('downloadCroppedBtn');
+const downloadComplianceBtn = document.getElementById('downloadComplianceBtn');
 
 // Printable Layout Elements
 const printableSheetImage = document.getElementById('printableSheetImage');
@@ -210,6 +213,10 @@ function setupEventListeners() {
     
     removeFileBtn.addEventListener('click', () => {
         resetApp();
+    });
+
+    downloadComplianceBtn.addEventListener('click', () => {
+        downloadComplianceCertificate();
     });
 
     // Country Select Change
@@ -828,8 +835,11 @@ async function generatePrintableSheet() {
 }
 
 // Dynamically render biometric report cards based on quality score and analysis checks
-// Dynamically render biometric report cards based on quality score and analysis checks
 function renderBiometricReport(score, complianceOrAnalysis) {
+    // Store compliance info for downloading reports
+    appState.lastScore = score;
+    appState.lastCompliance = complianceOrAnalysis;
+
     // 1. Show both compliance cards
     const cropCard = document.getElementById('cropComplianceReportCard');
     const printCard = document.getElementById('printComplianceReportCard');
@@ -998,4 +1008,50 @@ function updateChipActive(count) {
     document.querySelectorAll('.photo-count-chip').forEach(chip => {
         chip.classList.toggle('active', parseInt(chip.dataset.count, 10) === count);
     });
+}
+
+// Post compliance statistics to backend and trigger PDF certificate download
+async function downloadComplianceCertificate() {
+    if (!appState.lastCompliance) {
+        alert("No biometric compliance data available. Please upload and process a photo first.");
+        return;
+    }
+    
+    try {
+        downloadComplianceBtn.disabled = true;
+        downloadComplianceBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generating PDF...';
+        
+        const requestData = {
+            compliance: appState.lastCompliance,
+            country: countrySelect.value,
+            doc_type: "Passport",
+            score: appState.lastScore
+        };
+        
+        const response = await fetch('/api/compliance-report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestData)
+        });
+        
+        if (!response.ok) {
+            throw new Error("Failed to generate compliance report PDF");
+        }
+        
+        const data = await response.json();
+        
+        // Trigger browser download dialog
+        const link = document.createElement('a');
+        link.href = data.pdf_url;
+        link.download = data.pdf_filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+    } catch (err) {
+        alert(`Error exporting compliance certificate: ${err.message}`);
+    } finally {
+        downloadComplianceBtn.disabled = false;
+        downloadComplianceBtn.innerHTML = '<i class="fa-solid fa-file-invoice"></i> Download Compliance Certificate (PDF)';
+    }
 }

@@ -24,7 +24,7 @@ from models.face_detector import align_and_detect
 from models.auto_enhance import auto_enhance as compute_auto_enhance, evaluate_biometric_compliance
 from models.layout_generator import generate_printable_sheet
 from models.cutting_lines import draw_cutting_lines
-from utils.pdf_generator import export_sheet_to_pdf
+from utils.pdf_generator import export_sheet_to_pdf, generate_compliance_pdf
 from models.pipeline import run_passport_pipeline
 
 app = FastAPI(
@@ -440,6 +440,37 @@ async def generate_sheet(req: LayoutRequest):
         import logging
         logging.getLogger(__name__).error(f"Error in generate_sheet: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate layout: {str(e)}")
+
+class ComplianceReportRequest(BaseModel):
+    compliance: dict
+    country: str
+    doc_type: str
+    score: int
+
+@app.post("/api/compliance-report")
+async def get_compliance_report(req: ComplianceReportRequest):
+    try:
+        report_filename = f"compliance_report_{uuid.uuid4().hex[:8]}.pdf"
+        report_path = os.path.join(PRINTABLE_OUTPUT_FOLDER, report_filename)
+        
+        # Generate compliance PDF
+        generate_compliance_pdf(
+            compliance_data=req.compliance,
+            output_pdf_path=report_path,
+            country_name=req.country,
+            doc_type=req.doc_type,
+            quality_score=req.score
+        )
+        
+        return {
+            "success": True,
+            "pdf_url": f"/outputs/printable/{report_filename}",
+            "pdf_filename": report_filename
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to generate compliance PDF: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to compile report: {str(e)}")
 
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
