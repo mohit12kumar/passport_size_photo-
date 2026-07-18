@@ -145,8 +145,8 @@ def _run_rembg(img: Image.Image, session, alpha_matting: bool) -> Image.Image:
 
 def is_background_compliant(pil_image, target_hex_color: str) -> bool:
     """
-    Analyzes image corners to determine if the background is already uniform
-    and matches the required target color, avoiding redundant segmentation.
+    Analyzes top and side boundaries of the image to determine if the background
+    is already uniform and matches the required target color, avoiding redundant segmentation.
     """
     if not target_hex_color or target_hex_color.strip().lower() == "transparent":
         return False
@@ -156,25 +156,34 @@ def is_background_compliant(pil_image, target_hex_color: str) -> bool:
         img_np = np.array(pil_image.convert("RGB"))
         h, w = img_np.shape[:2]
         
-        # Crop 15x15 corners
-        box_sz = min(15, int(min(w, h) * 0.05))
-        if box_sz < 3:
-            return False
-            
-        corners = [
-            img_np[0:box_sz, 0:box_sz],          # Top-left
-            img_np[0:box_sz, w-box_sz:w],        # Top-right
-        ]
+        # Define background check regions:
+        # 1. Top 12% of the image height
+        top_h = max(3, int(h * 0.12))
+        top_region = img_np[0:top_h, :]
         
-        # Flatten corner pixels
-        pixels = np.concatenate([c.reshape(-1, 3) for c in corners], axis=0)
+        # 2. Left 10% of the image width, top 60% of height (to avoid shoulders)
+        left_w = max(3, int(w * 0.10))
+        side_h = max(3, int(h * 0.60))
+        left_region = img_np[0:side_h, 0:left_w]
+        
+        # 3. Right 10% of the image width, top 60% of height
+        right_region = img_np[0:side_h, w-left_w:w]
+        
+        # Flatten and combine all background region pixels
+        pixels = np.concatenate([
+            top_region.reshape(-1, 3),
+            left_region.reshape(-1, 3),
+            right_region.reshape(-1, 3)
+        ], axis=0)
         
         # Compute mean and standard deviation
         mean_rgb = np.mean(pixels, axis=0)
         std_rgb = np.mean(np.std(pixels, axis=0))
         
-        # 1. Background must be uniform (low std dev)
-        if std_rgb > 12.0:
+        # 1. Background must be uniform (low std dev across the entire top/sides)
+        # Real plain backgrounds have low std dev (usually < 15.0).
+        # Busy backgrounds with objects (chair, fire extinguisher, signs) will have high std dev.
+        if std_rgb > 15.0:
             return False
             
         # 2. Match target color
@@ -186,7 +195,7 @@ def is_background_compliant(pil_image, target_hex_color: str) -> bool:
             
         # Euclidean distance in RGB space
         dist = np.linalg.norm(mean_rgb - np.array(target_rgb))
-        if dist < 18.0:
+        if dist < 15.0:
             logger.info(f"Background is already compliant (uniformity={std_rgb:.1f}, dist={dist:.1f}). Skipping segmentation.")
             return True
             
