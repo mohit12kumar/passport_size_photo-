@@ -4,13 +4,12 @@ from PIL import Image
 import pytest
 
 from models.crop_engine import crop_and_resize, calculate_base_crop
-from models.layout_generator import generate_printable_sheet, calculate_grid_positions
+from models.layout_generator import generate_printable_sheet
 from models.enhancement import enhance_image
 from models.cutting_lines import draw_cutting_lines
-from models.face_detector import align_and_detect, rotate_image
+from models.face_detector import align_and_detect
 from models.bg_removal import remove_background
 from utils.pdf_generator import export_sheet_to_pdf
-from config import COUNTRY_RULES
 
 def test_calculate_base_crop():
     # Test coordinate calculation logic
@@ -24,13 +23,13 @@ def test_calculate_base_crop():
 
 def test_crop_and_resize(dummy_image):
     face_box = {"x": 200, "y": 150, "w": 200, "h": 250}
-    
+
     # Test cropping using the US passport specification (must return a 600x600 px image at 300 DPI)
     cropped = crop_and_resize(dummy_image, face_box, "usa")
     assert cropped is not None
     assert isinstance(cropped, Image.Image)
     assert cropped.size == (600, 600)
-    
+
     # Test cropping using the Canada passport specification (must return a 590x826 px image)
     cropped_ca = crop_and_resize(dummy_image, face_box, "canada")
     assert cropped_ca is not None
@@ -51,7 +50,7 @@ def test_enhance_image(dummy_image):
     )
     assert enhanced is not None
     assert enhanced.size == dummy_image.size
-    
+
     # Test with OpenCV adjustments enabled
     enhanced_cv = enhance_image(
         dummy_image,
@@ -70,7 +69,7 @@ def test_enhance_image(dummy_image):
 def test_generate_printable_sheet(dummy_image):
     # Create a small cropped passport photo (e.g. 600x600 px)
     passport_img = Image.new("RGB", (600, 600), (255, 255, 255))
-    
+
     # Generate A4 printable sheet (photo width 50.8mm, height 50.8mm)
     sheet_img, layout_info = generate_printable_sheet(
         passport_img,
@@ -81,7 +80,7 @@ def test_generate_printable_sheet(dummy_image):
         gap_mm=2.5,
         draw_guides_func=draw_cutting_lines
     )
-    
+
     assert sheet_img is not None
     assert isinstance(sheet_img, Image.Image)
     assert layout_info["count"] > 0
@@ -115,7 +114,7 @@ def test_remove_background(dummy_image, monkeypatch):
     # Mock session retrieval to prevent loading the heavy birefnet general model in unit tests
     monkeypatch.setattr(models.bg_removal, "_get_session", lambda: "mock_session")
     monkeypatch.setattr(models.bg_removal, "_get_session_by_name", lambda name: "mock_session")
-    
+
     if models.bg_removal.REMBG_AVAILABLE:
         import rembg
         monkeypatch.setattr(rembg, "remove", lambda img, **kwargs: img.convert("RGBA"))
@@ -124,8 +123,39 @@ def test_remove_background(dummy_image, monkeypatch):
     cleaned = remove_background(dummy_image, bg_color_hex="#FFFFFF")
     assert cleaned is not None
     assert cleaned.size == dummy_image.size
-    
+
     # Test transparency output
     cleaned_trans = remove_background(dummy_image, bg_color_hex="transparent")
     assert cleaned_trans is not None
     assert cleaned_trans.mode in ("RGBA", "RGB")
+
+
+def test_evaluate_biometric_compliance(dummy_image):
+    from models.auto_enhance import evaluate_biometric_compliance
+    
+    # 1. Test with face_box missing (should fail face_detected)
+    res = evaluate_biometric_compliance(dummy_image, face_box=None, eyes=[], auto_angle=0.0, country_code="usa")
+    assert res["passed"] is False
+    assert res["checks"]["face_detected"]["passed"] is False
+    assert res["score"] < 100
+
+    # 2. Test with a mock face_box and eyes, but uncropped image (is_processed=False)
+    face_box = {"x": 200, "y": 150, "w": 200, "h": 250}
+    eyes = [
+        {"x": 250, "y": 230, "w": 20, "h": 20},
+        {"x": 330, "y": 230, "w": 20, "h": 20}
+    ]
+    res = evaluate_biometric_compliance(dummy_image, face_box, eyes, auto_angle=2.0, country_code="usa", is_processed=False)
+    assert res["checks"]["face_detected"]["passed"] is True
+    assert res["checks"]["eyes_aligned"]["passed"] is True
+    assert res["checks"]["tilt"]["status"] == "PASS"
+
+    # 3. Test warning on roll angle (tilt warning)
+    res_tilt = evaluate_biometric_compliance(dummy_image, face_box, eyes, auto_angle=12.0, country_code="usa", is_processed=False)
+    assert res_tilt["checks"]["tilt"]["status"] == "WARN"
+
+    # 4. Test warning on off-centering
+    bad_center_face = {"x": 50, "y": 150, "w": 200, "h": 250} # shifted far left
+    res_center = evaluate_biometric_compliance(dummy_image, bad_center_face, eyes, auto_angle=0.0, country_code="usa", is_processed=False)
+    assert res_center["checks"]["centering"]["status"] == "WARN"
+

@@ -1,6 +1,5 @@
 import io
 import os
-import pytest
 from PIL import Image
 
 # Import configurations to know where files are written
@@ -31,10 +30,10 @@ def test_api_full_pipeline_flow(client):
     img_byte_arr = io.BytesIO()
     img.save(img_byte_arr, format='JPEG')
     img_byte_arr.seek(0)
-    
+
     # Files created list for cleanup
     created_files = []
-    
+
     try:
         # 2. Upload file
         upload_response = client.post(
@@ -43,20 +42,20 @@ def test_api_full_pipeline_flow(client):
         )
         assert upload_response.status_code == 200
         upload_data = upload_response.json()
-        
+
         assert upload_data["success"] is True
         assert "filename" in upload_data
         assert "aligned_filename" in upload_data
         assert "face" in upload_data
-        
+
         filename = upload_data["filename"]
         aligned_filename = upload_data["aligned_filename"]
         face = upload_data["face"]
-        
+
         # Track files to delete later
         created_files.append(os.path.join(UPLOAD_FOLDER, filename))
         created_files.append(os.path.join(UPLOAD_FOLDER, aligned_filename))
-        
+
         # 3. Process photo
         process_payload = {
             "filename": filename,
@@ -77,14 +76,14 @@ def test_api_full_pipeline_flow(client):
         process_response = client.post("/api/process", json=process_payload)
         assert process_response.status_code == 200
         process_data = process_response.json()
-        
+
         assert process_data["success"] is True
         assert "filename" in process_data
         assert "url" in process_data
-        
+
         processed_filename = process_data["filename"]
         created_files.append(os.path.join(PASSPORT_OUTPUT_FOLDER, processed_filename))
-        
+
         # 4. Generate printable grid sheet
         layout_payload = {
             "filename": processed_filename,
@@ -96,18 +95,18 @@ def test_api_full_pipeline_flow(client):
         sheet_response = client.post("/api/generate-sheet", json=layout_payload)
         assert sheet_response.status_code == 200
         sheet_data = sheet_response.json()
-        
+
         assert sheet_data["success"] is True
         assert "sheet_filename" in sheet_data
         assert "pdf_filename" in sheet_data
         assert "sheet_url" in sheet_data
         assert "pdf_url" in sheet_data
-        
+
         sheet_filename = sheet_data["sheet_filename"]
         pdf_filename = sheet_data["pdf_filename"]
         created_files.append(os.path.join(PRINTABLE_OUTPUT_FOLDER, sheet_filename))
         created_files.append(os.path.join(PRINTABLE_OUTPUT_FOLDER, pdf_filename))
-        
+
     finally:
         # Cleanup files to prevent workspace pollution
         for filepath in created_files:

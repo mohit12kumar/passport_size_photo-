@@ -1,12 +1,14 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import uvicorn
 import uuid
 import os
 import shutil
 from PIL import Image
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 from config import (
     UPLOAD_FOLDER,
@@ -19,10 +21,7 @@ from config import (
     DEFAULT_GAP_MM
 )
 from models.face_detector import align_and_detect
-from models.bg_removal import remove_background
-from models.auto_enhance import auto_enhance as compute_auto_enhance
-from models.enhancement import enhance_image
-from models.crop_engine import crop_and_resize
+from models.auto_enhance import auto_enhance as compute_auto_enhance, evaluate_biometric_compliance
 from models.layout_generator import generate_printable_sheet
 from models.cutting_lines import draw_cutting_lines
 from utils.pdf_generator import export_sheet_to_pdf
@@ -38,13 +37,33 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PASSPORT_OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(PRINTABLE_OUTPUT_FOLDER, exist_ok=True)
 
+def clean_folders():
+    """Deletes all files inside uploads/ and outputs/ directories to save space."""
+    folders = [UPLOAD_FOLDER, PASSPORT_OUTPUT_FOLDER, PRINTABLE_OUTPUT_FOLDER]
+    for folder in folders:
+        if os.path.exists(folder):
+            for filename in os.listdir(folder):
+                file_path = os.path.join(folder, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Failed to delete {file_path}. Reason: {e}")
+
+# Run cleanup on startup to clear any leftover files from previous sessions
+try:
+    clean_folders()
+except Exception as clean_err:
+    import logging
+    logging.getLogger(__name__).warning(f"Startup clean failed: {clean_err}")
+
 # Mount static and output folders to serve files directly to frontend
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
 app.mount("/outputs", StaticFiles(directory=OUTPUT_FOLDER), name="outputs")
-
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 
 class NoCacheStaticMiddleware(BaseHTTPMiddleware):
     """Prevent browsers from caching static JS/CSS files during development."""
@@ -97,6 +116,11 @@ class LayoutRequest(BaseModel):
 @app.get("/")
 async def serve_index():
     """Serves the main application page."""
+    try:
+        clean_folders()
+    except Exception as clean_err:
+        import logging
+        logging.getLogger(__name__).warning(f"Index reload cleanup failed: {clean_err}")
     index_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
     if not os.path.exists(index_path):
         raise HTTPException(status_code=404, detail="index.html not found")
@@ -112,25 +136,43 @@ async def get_paper_sizes():
     """Returns the database of supported paper sheet dimensions."""
     return PAPER_SIZES
 
+@app.post("/api/cleanup")
+async def api_cleanup():
+    """Manually clears all upload and output files."""
+    try:
+        clean_folders()
+        return {"success": True, "message": "All previous data cleared successfully."}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error in api_cleanup: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to clear data: {str(e)}")
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     """
     Uploads a photo, performs automatic face detection and rotation/alignment,
     and returns face metadata and alignment angle.
     """
+    # Clean up previous runs' files to save disk space
+    try:
+        clean_folders()
+    except Exception as clean_err:
+        import logging
+        logging.getLogger(__name__).warning(f"Upload cleanup failed: {clean_err}")
+
     # Validate file extension
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in [".jpg", ".jpeg", ".png", ".heic"]:
         raise HTTPException(status_code=400, detail="Unsupported file format. Please upload JPG, PNG, or HEIC.")
-        
+
     # Generate unique filename to avoid collisions
     unique_filename = f"{uuid.uuid4()}{ext}"
     temp_path = os.path.join(UPLOAD_FOLDER, f"temp_{unique_filename}")
-    
+
     # Save uploaded file
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-        
+
     try:
         # Check HEIC support
         if ext == ".heic":
@@ -140,24 +182,24 @@ async def upload_file(file: UploadFile = File(...)):
             except ImportError:
                 os.remove(temp_path)
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail="HEIC support requires 'pillow-heif' package on the server. Please upload JPG or PNG."
                 )
-                
+
         pil_img = Image.open(temp_path)
-        
+
         # Run automatic face detection & alignment (straightening)
         aligned_pil, face_box, eyes, auto_angle = align_and_detect(pil_img)
-        
+
         # Save the straightened image (this becomes the working source image)
         aligned_filename = f"aligned_{unique_filename.split('.')[0]}.png"
         aligned_path = os.path.join(UPLOAD_FOLDER, aligned_filename)
         aligned_pil.save(aligned_path, "PNG")
-        
+
         # Save original file reference
         final_orig_path = os.path.join(UPLOAD_FOLDER, unique_filename)
         shutil.move(temp_path, final_orig_path)
-        
+
         # Run AI auto-enhancement analysis
         try:
             enhance_hints = compute_auto_enhance(aligned_pil)
@@ -166,6 +208,20 @@ async def upload_file(file: UploadFile = File(...)):
                 "brightness": 1.0, "contrast": 1.0,
                 "sharpness": 1.0, "saturation": 1.0,
                 "analysis": {}
+            }
+
+        # Run strict quality validation
+        try:
+            compliance = evaluate_biometric_compliance(
+                aligned_pil, face_box, eyes, auto_angle, country_code="usa", is_processed=False
+            )
+        except Exception as comp_err:
+            import logging
+            logging.getLogger(__name__).warning(f"Compliance check failed on upload: {comp_err}")
+            compliance = {
+                "passed": face_box is not None,
+                "score": 90,
+                "checks": {}
             }
 
         return {
@@ -179,9 +235,10 @@ async def upload_file(file: UploadFile = File(...)):
             "auto_angle": auto_angle,
             "original_url": f"/uploads/{unique_filename}",
             "aligned_url": f"/uploads/{aligned_filename}",
-            "auto_enhance": enhance_hints
+            "auto_enhance": enhance_hints,
+            "compliance": compliance
         }
-        
+
     except Exception as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -206,18 +263,18 @@ async def process_photo(req: ProcessRequest):
     """
     # Locate original working image
     orig_path = os.path.join(UPLOAD_FOLDER, req.filename)
-    
+
     if not os.path.exists(orig_path):
         # Fallback to aligned if original is missing
         aligned_filename = f"aligned_{os.path.splitext(req.filename)[0]}.png"
         orig_path = os.path.join(UPLOAD_FOLDER, aligned_filename)
         if not os.path.exists(orig_path):
             raise HTTPException(status_code=404, detail="Source image not found.")
-            
+
     try:
         # Load image
         img = Image.open(orig_path)
-        
+
         # Convert face box to dictionary
         face_dict = {
             "x": req.face.x,
@@ -225,7 +282,7 @@ async def process_photo(req: ProcessRequest):
             "w": req.face.w,
             "h": req.face.h
         }
-        
+
         # Determine enhancement values (auto enhance or custom sliders)
         if req.auto_enhance:
             # We align it first to run auto-enhance on the aligned face image
@@ -263,26 +320,44 @@ async def process_photo(req: ProcessRequest):
             face_box_override=face_dict,
             gamma=req.gamma
         )
-        
+
         # Save processed passport image
         out_filename = f"passport_{os.path.splitext(req.filename)[0]}.jpg"
         out_path = os.path.join(PASSPORT_OUTPUT_FOLDER, out_filename)
         final_img.save(out_path, "JPEG", quality=95, dpi=(300, 300))
-        
+
         # Calculate biometric quality analysis on the final processed image
         try:
-            hints = compute_auto_enhance(final_img)
-            biometric_score = hints.get("biometric_score", 90)
-            analysis = hints.get("analysis", {})
-        except Exception:
+            # Re-run face detection on the final cropped image to check final alignment
+            final_aligned, final_face_box, final_eyes, final_angle = align_and_detect(final_img)
+            
+            compliance = evaluate_biometric_compliance(
+                final_img, final_face_box, final_eyes, final_angle + req.manual_rotation, req.country, is_processed=True
+            )
+            
+            biometric_score = compliance["score"]
+            analysis = {
+                "is_blurry": not compliance["checks"].get("sharpness", {}).get("passed", True),
+                "is_dark": not compliance["checks"].get("brightness", {}).get("passed", True),
+                "is_overexposed": not compliance["checks"].get("overexposure", {}).get("passed", True),
+                "is_low_contrast": not compliance["checks"].get("contrast", {}).get("passed", True)
+            }
+        except Exception as comp_err:
+            import logging
+            logging.getLogger(__name__).error(f"Error in compliance check on process: {comp_err}", exc_info=True)
             biometric_score = 90
+            compliance = {
+                "passed": True,
+                "score": 90,
+                "checks": {}
+            }
             analysis = {
                 "is_blurry": False,
                 "is_dark": False,
                 "is_overexposed": False,
                 "is_low_contrast": False
             }
-            
+
         return {
             "success": True,
             "filename": out_filename,
@@ -290,7 +365,8 @@ async def process_photo(req: ProcessRequest):
             "width": final_img.width,
             "height": final_img.height,
             "biometric_score": biometric_score,
-            "analysis": analysis
+            "analysis": analysis,
+            "compliance": compliance
         }
     except Exception as e:
         import logging
@@ -306,19 +382,19 @@ async def generate_sheet(req: LayoutRequest):
     passport_path = os.path.join(PASSPORT_OUTPUT_FOLDER, req.filename)
     if not os.path.exists(passport_path):
         raise HTTPException(status_code=404, detail="Processed passport photo not found.")
-        
+
     try:
         # Load cropped passport photo
         passport_img = Image.open(passport_path)
-        
+
         # Get country rules to know dimensions in mm
         rule = COUNTRY_RULES.get(req.country.lower())
         if not rule:
             raise HTTPException(status_code=400, detail="Country not supported.")
-            
+
         photo_w_mm = rule["width_mm"]
         photo_h_mm = rule["height_mm"]
-        
+
         # Generate sheet
         sheet_img, layout_info = generate_printable_sheet(
             passport_img,
@@ -330,23 +406,23 @@ async def generate_sheet(req: LayoutRequest):
             draw_guides_func=draw_cutting_lines,
             photo_count=req.photo_count
         )
-        
+
         # Save sheet image
         sheet_filename = f"sheet_{req.paper_size}_{req.filename}"
         sheet_path = os.path.join(PRINTABLE_OUTPUT_FOLDER, sheet_filename)
         sheet_img.save(sheet_path, "PNG", dpi=(300, 300))
-        
+
         # Generate PDF
         pdf_filename = f"print_{req.paper_size}_{os.path.splitext(req.filename)[0]}.pdf"
         pdf_path = os.path.join(PRINTABLE_OUTPUT_FOLDER, pdf_filename)
-        
+
         export_sheet_to_pdf(
-            sheet_img, 
-            pdf_path, 
-            layout_info["width_mm"], 
+            sheet_img,
+            pdf_path,
+            layout_info["width_mm"],
             layout_info["height_mm"]
         )
-        
+
         return {
             "success": True,
             "sheet_filename": sheet_filename,

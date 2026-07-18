@@ -46,8 +46,6 @@ def draw_cutting_lines(sheet_pil_image, positions_mm, photo_w_mm, photo_h_mm,
 
         sheet_w_px = mm_to_px(paper_w_mm)
         sheet_h_px = mm_to_px(paper_h_mm)
-        photo_w_px = mm_to_px(photo_w_mm)
-        photo_h_px = mm_to_px(photo_h_mm)
 
         if sheet_w_px <= 0 or sheet_h_px <= 0:
             logger.warning("Invalid sheet dimensions for drawing cutting lines.")

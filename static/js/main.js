@@ -413,6 +413,11 @@ function resetApp() {
     if (photoCountSelect) photoCountSelect.value = '8';
     if (photoCountGroup) photoCountGroup.style.display = 'none';
     updateChipActive(8);
+
+    // Call backend cleanup to delete files on disk
+    fetch('/api/cleanup', { method: 'POST' }).catch(err => {
+        console.error('Failed to trigger backend cleanup:', err);
+    });
 }
 
 // Switch view tabs
@@ -516,7 +521,9 @@ async function handleFileUpload(file) {
                 valSaturation.textContent = `${auto.saturation}x`;
                 
                 // Show biometric compliance report cards dynamically
-                if (auto.biometric_score && auto.analysis) {
+                if (data.compliance) {
+                    renderBiometricReport(data.compliance.score, data.compliance);
+                } else if (auto.biometric_score && auto.analysis) {
                     renderBiometricReport(auto.biometric_score, auto.analysis);
                 }
             }
@@ -737,7 +744,9 @@ async function processPassportPhoto() {
         processedIndicator.style.display = 'flex';
         
         // Show report card updated with processed specs
-        if (data.biometric_score && data.analysis) {
+        if (data.compliance) {
+            renderBiometricReport(data.compliance.score, data.compliance);
+        } else if (data.biometric_score && data.analysis) {
             renderBiometricReport(data.biometric_score, data.analysis);
         } else {
             renderBiometricReport(100, {
@@ -819,7 +828,8 @@ async function generatePrintableSheet() {
 }
 
 // Dynamically render biometric report cards based on quality score and analysis checks
-function renderBiometricReport(score, analysis) {
+// Dynamically render biometric report cards based on quality score and analysis checks
+function renderBiometricReport(score, complianceOrAnalysis) {
     // 1. Show both compliance cards
     const cropCard = document.getElementById('cropComplianceReportCard');
     const printCard = document.getElementById('printComplianceReportCard');
@@ -850,27 +860,79 @@ function renderBiometricReport(score, analysis) {
     });
 
     // 3. Evaluate each check status
-    const checks = {
-        face: appState.faceBox !== null,
-        eyes: appState.eyes && appState.eyes.length > 0,
-        sharpness: !analysis.is_blurry,
-        brightness: !analysis.is_dark,
-        overexposure: !analysis.is_overexposed,
-        contrast: !analysis.is_low_contrast,
-        background: bgRemovalToggle.checked,
-        dimensions: true // Crop guarantees exact size matching profile
-    };
+    let checks = {};
+    let deductions = [];
+
+    if (complianceOrAnalysis && complianceOrAnalysis.checks) {
+        const c = complianceOrAnalysis.checks;
+        checks = {
+            face: c.face_detected || {status: "FAIL", message: "No face detected"},
+            eyes: c.eyes_aligned || {status: "FAIL", message: "Eyes misaligned/undetected"},
+            centering: c.centering || {status: "PASS", message: "Face centering is compliant"},
+            tilt: c.tilt || {status: "PASS", message: "Head tilt is straight"},
+            head_ratio: c.head_ratio || {status: "PASS", message: "Head coverage is compliant"},
+            eye_level: c.eye_level || {status: "PASS", message: "Eye level height is compliant"},
+            sharpness: c.sharpness || {status: "PASS", message: "Image is sharp"},
+            brightness: c.brightness || {status: "PASS", message: "Image brightness is sufficient"},
+            overexposure: c.overexposure || {status: "PASS", message: "No severe overexposure"},
+            contrast: c.contrast || {status: "PASS", message: "Image contrast is sufficient"},
+            background: {status: bgRemovalToggle.checked ? "PASS" : "FAIL", message: bgRemovalToggle.checked ? "Background replaced" : "Background not replaced"},
+            dimensions: c.resolution || {status: "PASS", message: "Dimensions are compliant"}
+        };
+
+        // Collect messages for any failing or warning checks
+        for (const [key, check] of Object.entries(checks)) {
+            if (check.status !== "PASS") {
+                deductions.push(check.message);
+            }
+        }
+    } else {
+        // Fallback for old API response structure
+        const analysis = complianceOrAnalysis || {};
+        const facePassed = appState.faceBox !== null;
+        const eyesPassed = appState.eyes && appState.eyes.length > 0;
+        
+        checks = {
+            face: {status: facePassed ? "PASS" : "FAIL", message: "No face detected"},
+            eyes: {status: eyesPassed ? "PASS" : "FAIL", message: "Eyes misaligned/undetected"},
+            centering: {status: "PASS", message: "Face centering is compliant"},
+            tilt: {status: "PASS", message: "Head tilt is straight"},
+            head_ratio: {status: "PASS", message: "Head coverage is compliant"},
+            eye_level: {status: "PASS", message: "Eye level height is compliant"},
+            sharpness: {status: !analysis.is_blurry ? "PASS" : "FAIL", message: "Image is blurry"},
+            brightness: {status: !analysis.is_dark ? "PASS" : "FAIL", message: "Photo is too dark"},
+            overexposure: {status: !analysis.is_overexposed ? "PASS" : "FAIL", message: "Photo is overexposed"},
+            contrast: {status: !analysis.is_low_contrast ? "PASS" : "FAIL", message: "Image contrast is too low"},
+            background: {status: bgRemovalToggle.checked ? "PASS" : "FAIL", message: "Background not replaced"},
+            dimensions: {status: "PASS", message: "Dimensions are compliant"}
+        };
+
+        for (const [key, check] of Object.entries(checks)) {
+            if (check.status !== "PASS") {
+                deductions.push(check.message);
+            }
+        }
+    }
 
     // Helper to update specific checklist row across both cards
-    function updateCheckRow(className, passed, passedText = "PASSED", failedText = "FAILED") {
+    function updateCheckRow(className, checkResult, passedText = "PASSED", failedText = "FAILED") {
         document.querySelectorAll(className).forEach(li => {
             const icon = li.querySelector('.label i');
             const val = li.querySelector('.value');
-            if (passed) {
+            if (!icon || !val) return;
+
+            const status = (checkResult && checkResult.status) ? checkResult.status : "PASS";
+
+            if (status === "PASS") {
                 icon.className = 'fa-regular fa-circle-check';
                 icon.style.color = '#10b981';
                 val.className = 'value success-text';
                 val.textContent = passedText;
+            } else if (status === "WARN") {
+                icon.className = 'fa-solid fa-circle-exclamation';
+                icon.style.color = '#f59e0b';
+                val.className = 'value warning-text';
+                val.textContent = "WARNING";
             } else {
                 icon.className = 'fa-regular fa-circle-xmark';
                 icon.style.color = '#ef4444';
@@ -882,6 +944,10 @@ function renderBiometricReport(score, analysis) {
 
     updateCheckRow('.chk-face', checks.face, "PASSED", "FAILED");
     updateCheckRow('.chk-eyes', checks.eyes, "PASSED", "FAILED");
+    updateCheckRow('.chk-centering', checks.centering, "PASSED", "FAILED");
+    updateCheckRow('.chk-tilt', checks.tilt, "PASSED", "FAILED");
+    updateCheckRow('.chk-head-ratio', checks.head_ratio, "PASSED", "FAILED");
+    updateCheckRow('.chk-eye-level', checks.eye_level, "PASSED", "FAILED");
     updateCheckRow('.chk-sharpness', checks.sharpness, "PASSED", "FAILED");
     updateCheckRow('.chk-brightness', checks.brightness, "PASSED", "FAILED");
     updateCheckRow('.chk-overexposure', checks.overexposure, "PASSED", "FAILED");
@@ -890,19 +956,10 @@ function renderBiometricReport(score, analysis) {
     updateCheckRow('.chk-dimensions', checks.dimensions, "PASSED", "FAILED");
 
     // 4. Update the detailed instructions box at the bottom of both cards
-    let deductions = [];
-    if (!checks.face) deductions.push("No face detected");
-    else if (!checks.eyes) deductions.push("Eyes misaligned/undetected");
-    if (!checks.sharpness) deductions.push("Slightly blurry");
-    if (!checks.brightness) deductions.push("Underexposed (dark)");
-    if (!checks.overexposure) deductions.push("Overexposed");
-    if (!checks.contrast) deductions.push("Low contrast");
-    if (!checks.background) deductions.push("Background not replaced");
-
     document.querySelectorAll('.complianceDetailBox').forEach(box => {
         const icon = box.querySelector('i');
         const text = box.querySelector('.complianceDetailText');
-        if (score >= 90) {
+        if (score >= 90 && deductions.length === 0) {
             box.style.backgroundColor = '#f0fdf4';
             box.style.color = '#15803d';
             box.style.borderColor = 'rgba(21, 128, 61, 0.15)';
@@ -913,13 +970,13 @@ function renderBiometricReport(score, analysis) {
             box.style.color = '#b45309';
             box.style.borderColor = 'rgba(180, 83, 9, 0.15)';
             icon.className = 'fa-solid fa-circle-exclamation';
-            text.textContent = `Partial Pass: ${deductions.join("; ")}. Adjust settings to improve quality.`;
+            text.textContent = `Quality Check: ${deductions.join("; ")}. Adjust settings to improve.`;
         } else {
             box.style.backgroundColor = '#fef2f2';
             box.style.color = '#b91c1c';
             box.style.borderColor = 'rgba(185, 28, 28, 0.15)';
             icon.className = 'fa-solid fa-circle-xmark';
-            text.textContent = `Failed: ${deductions.join("; ")}. Please re-upload.`;
+            text.textContent = `Failed Standards: ${deductions.join("; ")}. Please correct adjustments or re-upload.`;
         }
     });
 }

@@ -66,7 +66,7 @@ def _get_session():
         model_to_use = REMBG_MODEL
         if model_to_use == "u2net_human_seg":
             model_to_use = "isnet-general-use"
-            
+
         session = _get_session_by_name(model_to_use)
         if session is None:
             # Fallback to other models during initialization
@@ -90,7 +90,7 @@ def _clean_alpha_mask(alpha: np.ndarray,
     try:
         if alpha is None or not hasattr(alpha, 'shape'):
             raise ValueError("Invalid alpha array passed to _clean_alpha_mask")
-            
+
         cleaned = alpha.astype(np.float32)
 
         # Only hard-clip the very lowest confidence background pixels
@@ -147,7 +147,7 @@ def remove_background(pil_image: Image.Image, bg_color_hex: str = "#FFFFFF") -> 
     if pil_image is None:
         logger.error("remove_background received None image")
         return Image.new("RGB", (300, 400), (255, 255, 255))
-        
+
     try:
         img_rgba = pil_image.convert("RGBA")
     except Exception as e:
@@ -180,7 +180,7 @@ def remove_background(pil_image: Image.Image, bg_color_hex: str = "#FFFFFF") -> 
                 session = _get_session()
             else:
                 session = _get_session_by_name(model_key)
-                
+
             # Pymatting (used when alpha_matting=True) constructs extremely large sparse matrices.
             # 480px cap gives safety margin; once alpha_matting fails, drop it completely.
             current_max_dim = 480 if alpha_matting else 1024

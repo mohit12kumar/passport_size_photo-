@@ -39,7 +39,7 @@ def main():
     print("=========================================")
     print("       PRE-DOWNLOADING AI MODELS         ")
     print("=========================================")
-    
+
     # 1. Download rembg model
     try:
         import rembg
@@ -53,7 +53,7 @@ def main():
     # 2. Download Real-ESRGAN weights
     project_root = os.path.dirname(os.path.abspath(__file__))
     dest_path = os.path.join(project_root, "gfpgan", "weights", "RealESRGAN_x4plus.pth")
-    
+
     print("\n[2/2] Downloading Real-ESRGAN weights...")
     if os.path.isfile(dest_path):
         print(f"[OK] Real-ESRGAN weights already exist at: {dest_path}")

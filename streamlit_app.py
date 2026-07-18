@@ -33,13 +33,13 @@ import streamlit as st
 from config import COUNTRY_RULES, PAPER_SIZES
 from models.face_detector import align_and_detect
 from models.bg_removal import remove_background
-from models.auto_enhance import auto_enhance
+from models.auto_enhance import auto_enhance, evaluate_biometric_compliance
 from models.enhancement import enhance_image
 from models.crop_engine import crop_and_resize
 from models.layout_generator import generate_printable_sheet
 from models.cutting_lines import draw_cutting_lines
 from utils.pdf_generator import export_sheet_to_pdf
-from models.super_resolution import enhance_hd, REALESRGAN_AVAILABLE
+from models.super_resolution import enhance_hd
 from models.pipeline import loose_crop
 
 logger = logging.getLogger(__name__)
@@ -343,7 +343,7 @@ if uploaded_file is not None:
                 st.session_state.auto_angle     = auto_angle
                 st.session_state.face_detected  = face_box is not None
                 st.session_state.align_error    = None
-                
+
                 # Perform Auto Crop & Center (Loose Crop) for sequential pipeline
                 f_box = face_box
                 if f_box is None:
@@ -366,7 +366,7 @@ if uploaded_file is not None:
                 st.session_state.auto_angle    = 0.0
                 st.session_state.face_detected = False
                 st.session_state.align_error   = str(e)
-                
+
                 # Default loose crop fallback
                 w, h = orig_img.size
                 f_box = {"x": int(w * 0.25), "y": int(h * 0.15), "w": int(w * 0.50), "h": int(h * 0.50)}
@@ -495,7 +495,7 @@ if st.session_state.orig_image is not None:
             if st.session_state.hd_image_key != hd_key:
                 if enable_hd and realesrgan_missing:
                     st.info("💡 Real-ESRGAN weights not downloaded. Running fast PIL Sharpening instead.")
-                
+
                 spinner_msg = "🔬 AI: Applying Real-ESRGAN super-resolution… (cached after first run)" if (enable_hd and not realesrgan_missing) else "⚡ Applying PIL sharpening… (cached)"
                 with st.spinner(spinner_msg):
                     try:
@@ -586,59 +586,42 @@ if st.session_state.orig_image is not None:
         st.write("---")
 
         # Re-evaluate quality on the final processed image if available
+        compliance = None
         if cropped_photo is not None:
             try:
-                final_hints = auto_enhance(cropped_photo)
-                analysis = final_hints.get("analysis", {})
-                score = final_hints.get("biometric_score", 90)
+                # Detect face and landmarks on final image to run strict compliance checks
+                final_aligned, final_face_box, final_eyes, final_angle = align_and_detect(cropped_photo)
+                compliance = evaluate_biometric_compliance(
+                    cropped_photo, final_face_box, final_eyes, final_angle + manual_rotation, country_key, is_processed=True
+                )
             except Exception as e:
                 logger.warning(f"Failed to re-evaluate final photo quality: {e}")
+
+        if compliance is None:
+            try:
+                compliance = evaluate_biometric_compliance(
+                    st.session_state.aligned_image or st.session_state.orig_image,
+                    st.session_state.face_box,
+                    st.session_state.eyes,
+                    st.session_state.auto_angle,
+                    country_key,
+                    is_processed=False
+                )
+            except Exception as e:
+                logger.warning(f"Fallback compliance check failed: {e}")
+
+        if compliance:
+            score = compliance["score"]
+            checks = compliance["checks"]
+            score_deductions = [item["message"] for item in checks.values() if item["status"] in ("FAIL", "WARN")]
+            # Background check is evaluated based on the user selection
+            if not remove_bg:
+                score = max(0, score - 15)
+                score_deductions.append("Background was not replaced")
         else:
-            score = hints.get("biometric_score", 90)
-            
-        score_deductions = []
-
-        if not st.session_state.face_detected:
-            score -= 40
-            score_deductions.append("No face detected (−40)")
-        elif not st.session_state.eyes:
-            score -= 10
-            score_deductions.append("Eyes not clearly detected or misaligned (−10)")
-
-        if analysis.get("is_blurry"):
-            score_deductions.append("Image is slightly blurry")
-        if analysis.get("is_dark"):
-            score_deductions.append("Image lighting is dark")
-        if analysis.get("is_overexposed"):
-            score_deductions.append("Image is over-exposed")
-        if analysis.get("is_low_contrast"):
-            score_deductions.append("Low contrast")
-
-        if not remove_bg:
-            score -= 15
-            score_deductions.append("Background was not replaced (−15)")
-
-        # Capture sub-threshold minor quality factors if the score is below 90 but no hard checks failed
-        if score < 90 and not score_deductions:
-            noise_est = analysis.get("noise_score", 0.0)
-            if noise_est > 3.0:
-                score_deductions.append(f"Minor image noise detected (factor: {noise_est:.1f})")
-            
-            mean_lum = analysis.get("mean_luminance", 135.0)
-            if abs(mean_lum - 135.0) > 20:
-                score_deductions.append(f"Sub-optimal lighting exposure (average: {mean_lum:.1f})")
-                
-            std_lum = analysis.get("std_luminance", 55.0)
-            if std_lum < 42.0:
-                score_deductions.append(f"Sub-optimal image contrast (factor: {std_lum:.1f})")
-
-            lap_var = analysis.get("blur_score", 80.0)
-            if lap_var < 80.0:
-                score_deductions.append(f"Minor lack of sharpness (factor: {lap_var:.1f})")
-
-        # Guarantee at least 90% score (Validated PASS) if no deductions/check failures occurred
-        if not score_deductions:
-            score = max(score, 90)
+            score = 90
+            checks = {}
+            score_deductions = []
 
         score = max(0, min(100, score))
 
@@ -704,19 +687,31 @@ if st.session_state.orig_image is not None:
 
                 st.write("**Biometric Checklist:**")
 
-                def _check(passed, label):
-                    icon = "✅" if passed else "❌"
-                    status = "PASSED" if passed else "FAILED"
-                    st.write(f"{icon} {label}: **{status}**")
+                def _check(check_key, label):
+                    item = checks.get(check_key, {"status": "PASS", "message": ""})
+                    status = item["status"]
+                    if check_key == "background":
+                        status = "PASS" if remove_bg else "FAIL"
+                    
+                    if status == "PASS":
+                        st.write(f"✅ {label}: **PASSED**")
+                    elif status == "WARN":
+                        st.write(f"⚠️ {label}: **WARNING** — {item.get('message', '')}")
+                    else:
+                        st.write(f"❌ {label}: **FAILED** — {item.get('message', '')}")
 
-                _check(st.session_state.face_detected, "Face Detection")
-                _check(bool(st.session_state.eyes), "Eye Detection & Alignment")
-                _check(not analysis.get("is_blurry", False), "Image Sharpness")
-                _check(not analysis.get("is_dark", False), "Lighting — Brightness")
-                _check(not analysis.get("is_overexposed", False), "Lighting — Overexposure")
-                _check(not analysis.get("is_low_contrast", False), "Image Contrast")
-                _check(remove_bg, f"Background Replaced ({bg_color})")
-                _check(True, f"Dimensions ({country_rule['width_mm']}x{country_rule['height_mm']}mm)")
+                _check("face_detected", "Face Detection")
+                _check("eyes_aligned", "Eye Detection & Alignment")
+                _check("centering", "Face Centering")
+                _check("tilt", "Pose & Rotation")
+                _check("head_ratio", "Head Coverage Ratio")
+                _check("eye_level", "Eye Level Position")
+                _check("sharpness", "Image Sharpness")
+                _check("brightness", "Lighting — Brightness")
+                _check("overexposure", "Lighting — Overexposure")
+                _check("contrast", "Image Contrast")
+                _check("background", f"Background Replaced ({bg_color})")
+                _check("resolution", f"Dimensions ({country_rule['width_mm']}x{country_rule['height_mm']}mm)")
 
                 if layout_info:
                     st.write("---")

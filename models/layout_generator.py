@@ -1,6 +1,6 @@
 from PIL import Image
 import logging
-from config import PAPER_SIZES, mm_to_px, DPI, DEFAULT_MARGIN_MM, DEFAULT_GAP_MM
+from config import PAPER_SIZES, mm_to_px, DEFAULT_MARGIN_MM, DEFAULT_GAP_MM
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ def calculate_forced_grid_positions(paper_w_mm, paper_h_mm, cols, rows, margin_m
 def generate_photo_layout(paper_width, paper_height, photo_width, photo_height, photo_count, gap=2.0, min_margin=1.0):
     """
     Dynamically calculate the best centered layout grid for a given photo count.
-    
+
     Args:
         paper_width: Paper width in mm (e.g. 102.0 for 4x6 portrait)
         paper_height: Paper height in mm (e.g. 152.0 for 4x6 portrait)
@@ -155,7 +155,7 @@ def generate_photo_layout(paper_width, paper_height, photo_width, photo_height, 
         photo_count: Selected number of photos (1, 2, 4, 6)
         gap: Gap between photos in mm
         min_margin: Minimum margin from page edges in mm
-        
+
     Returns:
         A dict containing layout details or None if it doesn't fit.
     """
@@ -166,27 +166,27 @@ def generate_photo_layout(paper_width, paper_height, photo_width, photo_height, 
             4: [(2, 2)],
             6: [(2, 3), (3, 2)]
         }
-        
+
         if photo_count not in shapes_by_count:
             return None
-            
+
         candidates = []
         min_paper_dim = min(paper_width, paper_height)
         max_paper_dim = max(paper_width, paper_height)
-        
+
         orientations = [
             (min_paper_dim, max_paper_dim), # Portrait
             (max_paper_dim, min_paper_dim)  # Landscape
         ]
-        
+
         for pw, ph in orientations:
             for c, r in shapes_by_count[photo_count]:
                 grid_w = c * photo_width + (c - 1) * gap
                 grid_h = r * photo_height + (r - 1) * gap
-                
+
                 mx = (pw - grid_w) / 2.0
                 my = (ph - grid_h) / 2.0
-                
+
                 if grid_w <= pw and grid_h <= ph and mx >= min_margin and my >= min_margin:
                     candidates.append({
                         "paper_w": pw,
@@ -197,26 +197,26 @@ def generate_photo_layout(paper_width, paper_height, photo_width, photo_height, 
                         "margin_y": my,
                         "balance": abs(mx - my)
                     })
-                    
+
         if not candidates:
             return None
-            
+
         # Select the layout candidate with the most balanced margins
         best = min(candidates, key=lambda x: x["balance"])
-        
+
         positions = []
         start_x = best["margin_x"]
         start_y = best["margin_y"]
         cols = best["columns"]
         rows = best["rows"]
-        
+
         for r in range(rows):
             for c in range(cols):
                 positions.append((
                     start_x + c * (photo_width + gap),
                     start_y + r * (photo_height + gap)
                 ))
-                
+
         return {
             "positions": positions,
             "columns": cols,
@@ -350,13 +350,13 @@ def generate_printable_sheet(passport_pil_image, paper_size_key, photo_w_mm, pho
         # ── Build the sheet canvas ──────────────────────────────────────────────
         sheet_w_px = mm_to_px(actual_w_mm)
         sheet_h_px = mm_to_px(actual_h_mm)
-        
+
         # Guard against zero or huge dimensions
         if sheet_w_px <= 0:
             sheet_w_px = 100
         if sheet_h_px <= 0:
             sheet_h_px = 100
-            
+
         sheet = Image.new("RGB", (sheet_w_px, sheet_h_px), (255, 255, 255))
 
         # Prepare the passport photo at the right pixel size, rotating if needed
@@ -387,7 +387,7 @@ def generate_printable_sheet(passport_pil_image, paper_size_key, photo_w_mm, pho
             x_mm, y_mm = positions_mm[idx]
             cell_x_px = mm_to_px(x_mm)
             cell_y_px = mm_to_px(y_mm)
-            
+
             # Make sure we paste inside boundaries
             if cell_x_px + border_px + content_w_px <= sheet_w_px and cell_y_px + border_px + content_h_px <= sheet_h_px:
                 sheet.paste(passport_resized, (cell_x_px + border_px, cell_y_px + border_px))

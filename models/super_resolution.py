@@ -47,7 +47,7 @@ def _get_realesrgan_upsampler():
             if not os.path.isfile(model_path):
                 logger.warning(f"Real-ESRGAN model file not found locally: {model_path}")
                 return None
-            
+
             model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
             _realesrgan_upsampler = RealESRGANer(
                 scale=4,
@@ -72,7 +72,7 @@ def _enhance_realesrgan(img_bgr) -> np.ndarray:
         upsampler = _get_realesrgan_upsampler()
         if upsampler is None:
             raise RuntimeError("Real-ESRGAN upsampler is not available.")
-        
+
         # Run inference with outscale=2.0 (RealESRGAN x2)
         enhanced_bgr, _ = upsampler.enhance(img_bgr, outscale=2.0)
         return enhanced_bgr
@@ -147,7 +147,7 @@ def _pil_hd_pipeline(pil_image: Image.Image, target_w: int, target_h: int) -> Im
             ratio = max_up_size / max(up_w, up_h)
             up_w = int(up_w * ratio)
             up_h = int(up_h * ratio)
-            
+
         img = img.resize((up_w, up_h), Image.Resampling.LANCZOS)
 
         # ── Step 2: CLAHE — adaptive local contrast on L channel ──────────────────

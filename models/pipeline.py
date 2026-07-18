@@ -1,7 +1,5 @@
-import os
 import logging
 from PIL import Image, ImageFilter, ImageEnhance
-from config import COUNTRY_RULES, mm_to_px
 
 logger = logging.getLogger(__name__)
 
@@ -9,44 +7,44 @@ def loose_crop(img: Image.Image, face_box: dict) -> tuple:
     """
     Step 2: Auto Crop & Center (Loose Crop)
     Crops a loose box centered around the face and including the neck and shoulders.
-    This reduces the size of the image for background removal and upscaling, 
+    This reduces the size of the image for background removal and upscaling,
     making the process faster and less memory-intensive.
-    
+
     Returns:
         (cropped_img, adjusted_face_box)
     """
     try:
         w, h = img.size
         fx, fy, fw, fh = float(face_box["x"]), float(face_box["y"]), float(face_box["w"]), float(face_box["h"])
-        
+
         # Calculate loose crop boundaries relative to face dimensions
         # We extend the box: 0.8 * fw on left/right, 0.9 * fh on top, and 2.5 * fh on bottom
         x1 = int(fx - fw * 0.8)
         y1 = int(fy - fh * 0.9)
         x2 = int(fx + fw * 1.8)
         y2 = int(fy + fh * 2.5)
-        
+
         # Pad if the crop box falls outside original image boundaries
         pad_left = max(0, -x1)
         pad_top = max(0, -y1)
         pad_right = max(0, x2 - w)
         pad_bottom = max(0, y2 - h)
-        
+
         # Coordinates clamped to image boundaries
         src_x1 = max(0, x1)
         src_y1 = max(0, y1)
         src_x2 = min(w, x2)
         src_y2 = min(h, y2)
-        
+
         # Crop the valid region
         crop_area = img.crop((src_x1, src_y1, src_x2, src_y2))
-        
+
         # Create a new padded canvas (using pure white background default)
         target_w = (src_x2 - src_x1) + pad_left + pad_right
         target_h = (src_y2 - src_y1) + pad_top + pad_bottom
         padded_img = Image.new("RGB", (target_w, target_h), (255, 255, 255))
         padded_img.paste(crop_area, (pad_left, pad_top))
-        
+
         # Adjust face box coordinates relative to the new cropped image
         adjusted_face_box = {
             "x": int(fx - x1),
@@ -147,7 +145,7 @@ def run_passport_pipeline(
             # Multi-pass sharpening
             enhancer = ImageEnhance.Sharpness(img_work)
             img_work = enhancer.enhance(sharpness)
-            
+
             # Apply unsharp mask filter for crisp edges
             img_work = img_work.filter(
                 ImageFilter.UnsharpMask(radius=1.0, percent=120, threshold=2)
